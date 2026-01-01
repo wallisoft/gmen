@@ -859,6 +859,12 @@ class GMenEditor:
                 depth = self.list_store.get_value(iter, 1)
                 parent_id = self.selected_item_id if depth > 0 else None
                 parent_iter = self.list_store.iter_parent(iter)
+        else:
+            # No selection - adding first item
+            depth = 0
+            parent_id = None
+            parent_iter = None
+            print("➕ Adding first menu item")
         
         # Generate temporary ID
         temp_id = -len(self.new_items) - 1
@@ -869,7 +875,7 @@ class GMenEditor:
         else:
             new_iter = self.list_store.append(None)
         
-        # Calculate sort order (append to end)
+        # Calculate sort order
         sort_order = self.get_next_sort_order(parent_iter)
         
         # Set values
@@ -892,6 +898,9 @@ class GMenEditor:
             'sort_order': sort_order
         })
         
+        # Clear the "empty menu" message if it exists
+        self.info_label.set_text("")
+        
         # Select the new item
         path = self.list_store.get_path(new_iter)
         self.treeview.scroll_to_cell(path, None, False, 0, 0)
@@ -902,7 +911,7 @@ class GMenEditor:
         
         self.mark_unsaved_changes()
         print(f"➕ Added new item (temp ID: {temp_id})")
-    
+
     def on_submenu(self, button):
         """Add subitem under selected item"""
         if not self.selected_item_id:
