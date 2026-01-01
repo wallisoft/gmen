@@ -1,0 +1,32 @@
+{
+  "theme": "windows11",
+  "show_recent": false,
+  "windows11_items": [
+    {
+      "title": "Terminal",
+      "command": "gnome-terminal",
+      "icon": "utilities-terminal",
+      "window_state": {
+        "enabled": true,
+        "x": 100,
+        "y": 100,
+        "width": 800,
+        "height": 600,
+        "monitor": null
+      }
+    },
+    {
+      "title": "File Browser",
+      "command": "nautilus",
+      "icon": "system-file-manager"
+    },
+    {
+      "title": "Edit Menu",
+      "command": "gmen-editor",
+      "icon": "accessories-text-editor"
+    }
+  ],
+  "quick_launch": [],
+  "categories": {},
+  "power": []
+}
