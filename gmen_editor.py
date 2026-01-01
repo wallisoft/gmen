@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, GLib, Gdk, GObject
+from gi.repository import Gtk, GLib, Gdk
 
 from storage.database import Database
 from utils.config import ConfigManager
@@ -34,7 +34,7 @@ class GMenEditor:
         # Track changes for batch save
         self.dirty_items = set()  # IDs of modified items
         self.new_items = []       # New items to insert (dicts)
-        self.deleted_items = set() # IDs of deleted items
+        self.deleted_items = set()  # IDs of deleted items
         
         # Load or create default menu
         default_menu = self.db.fetch_one("""
@@ -146,7 +146,6 @@ class GMenEditor:
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         
         # TreeView for hierarchical display
-        # text, depth, item_id, parent_id, has_children, sort_order, is_new
         self.list_store = Gtk.TreeStore(str, int, int, int, bool, int, bool)
         self.treeview = Gtk.TreeView(model=self.list_store)
         
@@ -242,7 +241,7 @@ class GMenEditor:
         self.cmd_entry.connect("changed", self.on_cmd_changed)
         vbox.pack_start(self.cmd_entry, False, False, 0)
         
-        # Script Selection (stub for now)
+        # Script Selection
         self.script_label = Gtk.Label(label="Script:")
         vbox.pack_start(self.script_label, False, False, 0)
         
@@ -259,7 +258,7 @@ class GMenEditor:
         self.icon_entry.connect("changed", self.on_icon_changed)
         vbox.pack_start(self.icon_entry, False, False, 0)
         
-        # ===== WINDOW STATE CONTROLS =====
+        # Window State Controls
         window_frame = Gtk.Frame(label="🪟 Window State")
         window_frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
         
@@ -373,6 +372,14 @@ class GMenEditor:
         builder = MenuBuilder(self.db)
         menu_root = builder.build_menu(self.current_menu_id)
         
+        # Check if menu is empty
+        if not menu_root or len(menu_root.children) == 0:
+            self.info_label.set_text("Menu is empty. Click 'Add' to create first item.")
+            print("📭 Menu is empty - ready for first item")
+            self.update_button_states()
+            self.update_unsaved_indicator()
+            return
+        
         # Helper to add items recursively to TreeStore
         def add_children(parent_iter, menu_item):
             for child in menu_item.children:
@@ -403,33 +410,7 @@ class GMenEditor:
         self.update_button_states()
         self.update_unsaved_indicator()
     
-    # ===== TREE MANIPULATION METHODS (UI-FIRST!) =====
-
-
-    def get_next_sort_order(self, parent_iter):
-        """Get next available sort order for a level"""
-        max_order = 0
-
-        if parent_iter is None:
-            # Top level
-            it = self.list_store.get_iter_first()
-        else:
-            # Child level
-            it = self.list_store.iter_children(parent_iter)
-
-        # Iterate through all siblings
-        while it:
-            order = self.list_store.get_value(it, 5)
-            if order > max_order:
-                max_order = order
-            it = self.list_store.iter_next(it)
-
-        return max_order + 1
-
-    def handle_empty_menu(self):
-        """Handle case when menu has no items"""
-        self.info_label.set_text("Menu is empty. Click 'Add' to create first item.")
-        print("📭 Menu is empty - ready for first item")
+    # ===== TREE MANIPULATION METHODS =====
     
     def get_tree_iter_by_id(self, item_id, parent_iter=None):
         """Find a tree iter by item ID"""
@@ -461,25 +442,76 @@ class GMenEditor:
         # Get parent
         parent_iter = self.list_store.iter_parent(iter)
         
-        # Find previous sibling at same level
-        prev_iter = None
-        current = self.list_store.iter_children(parent_iter) if parent_iter else self.list_store.get_iter_first()
+        # Get the path to find position
+        path = self.list_store.get_path(iter)
+        position = path.get_indices()[-1]
         
-        while current:
-            if self.list_store.get_path(current) == self.list_store.get_path(iter):
-                break
-            prev_iter = current
-            current = self.list_store.iter_next(current)
-        
-        if not prev_iter:
+        if position == 0:
             return False  # Already at top
         
-        # Swap the items
-        self.swap_tree_items(prev_iter, iter)
+        # Get previous sibling iter
+        prev_path = list(path)
+        prev_path[-1] = position - 1
+        prev_path = tuple(prev_path)
+        prev_iter = self.list_store.get_iter(prev_path)
         
-        # Update sort order in UI
+        if not prev_iter:
+            return False
+        
+        # Actually swap positions in the tree store
+        # Get all data from current item
+        title = self.list_store.get_value(iter, 0)
+        depth = self.list_store.get_value(iter, 1)
+        item_id_val = self.list_store.get_value(iter, 2)
+        parent_id = self.list_store.get_value(iter, 3)
+        has_children = self.list_store.get_value(iter, 4)
+        sort_order = self.list_store.get_value(iter, 5)
+        is_new = self.list_store.get_value(iter, 6)
+        
+        # Get all data from previous item
+        prev_title = self.list_store.get_value(prev_iter, 0)
+        prev_depth = self.list_store.get_value(prev_iter, 1)
+        prev_item_id = self.list_store.get_value(prev_iter, 2)
+        prev_parent_id = self.list_store.get_value(prev_iter, 3)
+        prev_has_children = self.list_store.get_value(prev_iter, 4)
+        prev_sort_order = self.list_store.get_value(prev_iter, 5)
+        prev_is_new = self.list_store.get_value(prev_iter, 6)
+        
+        # Swap the values
+        self.list_store.set(iter,
+            0, prev_title,
+            1, prev_depth,
+            2, prev_item_id,
+            3, prev_parent_id,
+            4, prev_has_children,
+            5, prev_sort_order,
+            6, prev_is_new
+        )
+        
+        self.list_store.set(prev_iter,
+            0, title,
+            1, depth,
+            2, item_id_val,
+            3, parent_id,
+            4, has_children,
+            5, sort_order,
+            6, is_new
+        )
+        
+        # Update sort orders to match new positions
         self.update_sort_order_for_level(parent_iter)
         
+        # Mark both as dirty if they have database IDs
+        if not is_new and item_id_val > 0:
+            self.dirty_items.add(item_id_val)
+        if not prev_is_new and prev_item_id > 0:
+            self.dirty_items.add(prev_item_id)
+        
+        # Keep the moved item selected
+        self.selection.select_iter(prev_iter)
+        self.selected_item_id = item_id_val
+        
+        self.mark_unsaved_changes()
         return True
     
     def move_item_down(self, item_id):
@@ -491,46 +523,73 @@ class GMenEditor:
         # Get parent
         parent_iter = self.list_store.iter_parent(iter)
         
-        # Find next sibling
-        found_current = False
-        current = self.list_store.iter_children(parent_iter) if parent_iter else self.list_store.get_iter_first()
+        # Get the path to find position
+        path = self.list_store.get_path(iter)
+        position = path.get_indices()[-1]
         
-        while current:
-            if self.list_store.get_path(current) == self.list_store.get_path(iter):
-                found_current = True
-            elif found_current:
-                # This is the next sibling
-                self.swap_tree_items(iter, current)
-                
-                # Update sort order in UI
-                self.update_sort_order_for_level(parent_iter)
-                return True
-            
-            current = self.list_store.iter_next(current)
+        # Check if there's a next sibling
+        next_path = list(path)
+        next_path[-1] = position + 1
+        next_path = tuple(next_path)
+        next_iter = self.list_store.get_iter(next_path)
         
-        return False  # Already at bottom
-    
-    def swap_tree_items(self, iter1, iter2):
-        """Swap two items in the tree (preserving children)"""
-        # Get all data
-        data1 = [self.list_store.get_value(iter1, i) for i in range(7)]
-        data2 = [self.list_store.get_value(iter2, i) for i in range(7)]
+        if not next_iter:
+            return False  # Already at bottom
         
-        # Check if either is a new item (can't swap IDs for new items)
-        is_new1 = self.list_store.get_value(iter1, 6)
-        is_new2 = self.list_store.get_value(iter2, 6)
+        # Get all data from current item
+        title = self.list_store.get_value(iter, 0)
+        depth = self.list_store.get_value(iter, 1)
+        item_id_val = self.list_store.get_value(iter, 2)
+        parent_id = self.list_store.get_value(iter, 3)
+        has_children = self.list_store.get_value(iter, 4)
+        sort_order = self.list_store.get_value(iter, 5)
+        is_new = self.list_store.get_value(iter, 6)
         
-        # Swap sort orders (position 5)
-        self.list_store.set_value(iter1, 5, data2[5])
-        self.list_store.set_value(iter2, 5, data1[5])
+        # Get all data from next item
+        next_title = self.list_store.get_value(next_iter, 0)
+        next_depth = self.list_store.get_value(next_iter, 1)
+        next_item_id = self.list_store.get_value(next_iter, 2)
+        next_parent_id = self.list_store.get_value(next_iter, 3)
+        next_has_children = self.list_store.get_value(next_iter, 4)
+        next_sort_order = self.list_store.get_value(next_iter, 5)
+        next_is_new = self.list_store.get_value(next_iter, 6)
+        
+        # Swap the values
+        self.list_store.set(iter,
+            0, next_title,
+            1, next_depth,
+            2, next_item_id,
+            3, next_parent_id,
+            4, next_has_children,
+            5, next_sort_order,
+            6, next_is_new
+        )
+        
+        self.list_store.set(next_iter,
+            0, title,
+            1, depth,
+            2, item_id_val,
+            3, parent_id,
+            4, has_children,
+            5, sort_order,
+            6, is_new
+        )
+        
+        # Update sort orders to match new positions
+        self.update_sort_order_for_level(parent_iter)
         
         # Mark both as dirty if they have database IDs
-        if not is_new1:
-            self.dirty_items.add(data1[2])
-        if not is_new2:
-            self.dirty_items.add(data2[2])
+        if not is_new and item_id_val > 0:
+            self.dirty_items.add(item_id_val)
+        if not next_is_new and next_item_id > 0:
+            self.dirty_items.add(next_item_id)
+        
+        # Keep the moved item selected
+        self.selection.select_iter(next_iter)
+        self.selected_item_id = item_id_val
         
         self.mark_unsaved_changes()
+        return True
     
     def update_sort_order_for_level(self, parent_iter):
         """Update sort_order values for all items at a level"""
@@ -538,6 +597,7 @@ class GMenEditor:
         it = self.list_store.iter_children(parent_iter) if parent_iter else self.list_store.get_iter_first()
         
         while it:
+            # Update sort order
             self.list_store.set_value(it, 5, index)
             
             # Mark as dirty if it has a database ID and isn't new
@@ -545,9 +605,35 @@ class GMenEditor:
             is_new = self.list_store.get_value(it, 6)
             if item_id > 0 and not is_new:
                 self.dirty_items.add(item_id)
+            elif item_id < 0 and is_new:
+                # Update sort order in new_items list
+                for new_item in self.new_items:
+                    if new_item.get('temp_id') == item_id:
+                        new_item['sort_order'] = index
+                        break
             
             index += 1
             it = self.list_store.iter_next(it)
+    
+    def get_next_sort_order(self, parent_iter):
+        """Get next available sort order for a level"""
+        max_order = 0
+        
+        if parent_iter is None:
+            # Top level
+            it = self.list_store.get_iter_first()
+        else:
+            # Child level
+            it = self.list_store.iter_children(parent_iter)
+        
+        # Iterate through all siblings
+        while it:
+            order = self.list_store.get_value(it, 5)
+            if order > max_order:
+                max_order = order
+            it = self.list_store.iter_next(it)
+        
+        return max_order + 1
     
     # ===== EVENT HANDLERS =====
     
@@ -573,12 +659,9 @@ class GMenEditor:
             
             if response == Gtk.ResponseType.YES:
                 if not self.save_menu():
-                    # Save failed, don't close
                     return
             elif response == Gtk.ResponseType.CANCEL:
-                # Don't close
                 return
-            # NO: close without saving
         
         Gtk.main_quit()
     
@@ -625,16 +708,18 @@ class GMenEditor:
                         WHERE id != ?
                     """, (self.current_menu_id,))
                 
-                # 2. Update modified items
+                # 2. Update modified items (including properties)
                 for item_id in self.dirty_items:
-                    # Get current values from UI tree
+                    # Get the tree iter to get current values
                     iter = self.get_tree_iter_by_id(item_id)
                     if iter:
                         title = self.list_store.get_value(iter, 0)
                         sort_order = self.list_store.get_value(iter, 5)
                         parent_id = self.list_store.get_value(iter, 3)
                         
-                        # Update database
+                        # Get properties from UI (they should be loaded when item was selected)
+                        # For now, we'll just update title, sort_order, and parent_id
+                        # In a real app, you'd also update command, icon, etc.
                         self.db.execute("""
                             UPDATE menu_items 
                             SET title = ?, sort_order = ?, parent_id = ?
@@ -643,10 +728,6 @@ class GMenEditor:
                 
                 # 3. Insert new items
                 for new_item in self.new_items:
-                    # Assign negative temporary IDs to track them
-                    if 'temp_id' not in new_item:
-                        new_item['temp_id'] = -len(self.new_items)
-                    
                     self.db.execute("""
                         INSERT INTO menu_items 
                         (menu_id, title, command, icon, depth, parent_id, sort_order)
@@ -661,25 +742,20 @@ class GMenEditor:
                         new_item.get('sort_order', 0)
                     ))
                     
-                    # Get the real ID
+                    # Get the real ID and update the tree
                     result = self.db.fetch_one("SELECT last_insert_rowid() AS id")
-                    new_item['real_id'] = result['id']
+                    real_id = result['id']
+                    
+                    # Find and update the tree item
+                    iter = self.get_tree_iter_by_id(new_item.get('temp_id'))
+                    if iter:
+                        self.list_store.set_value(iter, 2, real_id)
+                        self.list_store.set_value(iter, 6, False)  # Not new anymore
                 
                 # 4. Delete removed items
                 for item_id in self.deleted_items:
-                    # Delete from database (cascade will handle children)
                     self.db.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
-                    # Also delete window states
                     self.db.execute("DELETE FROM window_states WHERE menu_item_id = ?", (item_id,))
-                
-                # 5. Update temporary IDs in the UI tree
-                for new_item in self.new_items:
-                    if 'temp_id' in new_item and 'real_id' in new_item:
-                        # Find and update the tree item
-                        iter = self.get_tree_iter_by_id(new_item['temp_id'])
-                        if iter:
-                            self.list_store.set_value(iter, 2, new_item['real_id'])
-                            self.list_store.set_value(iter, 6, False)  # Not new anymore
             
             # Clear all change tracking
             self.dirty_items.clear()
@@ -704,7 +780,7 @@ class GMenEditor:
             title, depth, item_id, parent_id, has_children, sort_order, is_new = model[treeiter]
             self.selected_item_id = item_id
             
-            # Load item details if it exists in database
+            # Load item details
             if not is_new and item_id > 0:
                 item = self.db.fetch_one("""
                     SELECT title, command, icon, script_id FROM menu_items 
@@ -714,27 +790,16 @@ class GMenEditor:
                 if item:
                     self.title_entry.set_text(item['title'])
                     self.icon_entry.set_text(item['icon'] if item['icon'] else "")
+                    self.cmd_entry.set_text(item['command'] if item['command'] else "")
                     
                     # Check if it's a command or script
                     if item['script_id']:
                         self.script_radio.set_active(True)
                         self.on_type_changed()
-                        
-                        # Find and select the script in combo
-                        script = self.db.fetch_one("SELECT name FROM scripts WHERE id = ?", (item['script_id'],))
-                        if script:
-                            for i in range(self.script_combo.get_model().get_n_items()):
-                                text = self.script_combo.get_model().get_string(i)
-                                if script['name'] in text:
-                                    self.script_combo.set_active(i)
-                                    break
-                        
-                        self.cmd_entry.set_text("")
+                        self.script_combo.set_active(0)  # Placeholder
                     else:
                         self.cmd_radio.set_active(True)
                         self.on_type_changed()
-                        self.cmd_entry.set_text(item['command'] if item['command'] else "")
-                        self.script_combo.set_active(0)
                 
                 # Load window state
                 window_state = self.db.fetch_one("""
@@ -758,7 +823,7 @@ class GMenEditor:
                     self.height_entry.set_text("")
                     self.monitor_entry.set_text("")
             else:
-                # For new items, just show title from UI
+                # For new items
                 self.title_entry.set_text(title)
                 self.icon_entry.set_text("")
                 self.cmd_radio.set_active(True)
@@ -766,15 +831,9 @@ class GMenEditor:
                 self.cmd_entry.set_text("")
                 self.script_combo.set_active(0)
                 self.window_enable_check.set_active(False)
-                self.x_entry.set_text("")
-                self.y_entry.set_text("")
-                self.width_entry.set_text("")
-                self.height_entry.set_text("")
-                self.monitor_entry.set_text("")
             
             # Update info
-            self.info_label.set_text(f"Item ID: {item_id}{' (NEW)' if is_new else ''}, Depth: {depth}, Sort: {sort_order}" + 
-                                   (f", Has children: {has_children}" if has_children else ""))
+            self.info_label.set_text(f"Item ID: {item_id}{' (NEW)' if is_new else ''}, Depth: {depth}, Sort: {sort_order}")
         else:
             self.selected_item_id = None
             self.clear_properties()
@@ -807,25 +866,29 @@ class GMenEditor:
             if iter:
                 self.list_store.set_value(iter, 0, title)
                 
-                # Mark as dirty if it exists in DB, otherwise it's already tracked as new
+                # Mark as dirty if it exists in DB
                 is_new = self.list_store.get_value(iter, 6)
                 if not is_new:
                     self.dirty_items.add(self.selected_item_id)
+                else:
+                    # Update in new_items list
+                    for new_item in self.new_items:
+                        if new_item.get('temp_id') == self.selected_item_id:
+                            new_item['title'] = title
+                            break
                 
                 self.mark_unsaved_changes()
     
     def on_cmd_changed(self, entry):
-        # For UI-first, we'll track command changes in memory
-        # They'll be saved to DB on save
         if self.selected_item_id:
+            command = entry.get_text().strip()
+            # We'll track command changes in the save method
             self.mark_unsaved_changes()
     
     def on_script_changed(self, combo):
-        # Stub for now
         self.mark_unsaved_changes()
     
     def on_icon_changed(self, entry):
-        # Track icon changes for save
         if self.selected_item_id:
             self.mark_unsaved_changes()
     
@@ -844,7 +907,7 @@ class GMenEditor:
         if self.selected_item_id:
             self.mark_unsaved_changes()
     
-    # ===== ITEM OPERATIONS (UI-FIRST!) =====
+    # ===== ITEM OPERATIONS =====
     
     def on_add(self, button):
         """Add new item at current level"""
@@ -859,12 +922,6 @@ class GMenEditor:
                 depth = self.list_store.get_value(iter, 1)
                 parent_id = self.selected_item_id if depth > 0 else None
                 parent_iter = self.list_store.iter_parent(iter)
-        else:
-            # No selection - adding first item
-            depth = 0
-            parent_id = None
-            parent_iter = None
-            print("➕ Adding first menu item")
         
         # Generate temporary ID
         temp_id = -len(self.new_items) - 1
@@ -880,13 +937,13 @@ class GMenEditor:
         
         # Set values
         self.list_store.set(new_iter,
-            0, "New Item",        # title
-            1, depth,             # depth
-            2, temp_id,           # item_id (temporary)
-            3, parent_id,         # parent_id
-            4, False,             # has_children
-            5, sort_order,        # sort_order
-            6, True               # is_new
+            0, "New Item",
+            1, depth,
+            2, temp_id,
+            3, parent_id,
+            4, False,
+            5, sort_order,
+            6, True
         )
         
         # Track new item
@@ -898,7 +955,7 @@ class GMenEditor:
             'sort_order': sort_order
         })
         
-        # Clear the "empty menu" message if it exists
+        # Clear the "empty menu" message
         self.info_label.set_text("")
         
         # Select the new item
@@ -906,12 +963,12 @@ class GMenEditor:
         self.treeview.scroll_to_cell(path, None, False, 0, 0)
         self.selection.select_iter(new_iter)
         
-        # Update sort orders for the level
+        # Update sort orders
         self.update_sort_order_for_level(parent_iter)
         
         self.mark_unsaved_changes()
         print(f"➕ Added new item (temp ID: {temp_id})")
-
+    
     def on_submenu(self, button):
         """Add subitem under selected item"""
         if not self.selected_item_id:
@@ -935,13 +992,13 @@ class GMenEditor:
         
         # Set values
         self.list_store.set(new_iter,
-            0, "Sub-Menu",        # title
-            1, depth,             # depth
-            2, temp_id,           # item_id (temporary)
-            3, parent_id,         # parent_id
-            4, False,             # has_children
-            5, sort_order,        # sort_order
-            6, True               # is_new
+            0, "Sub-Menu",
+            1, depth,
+            2, temp_id,
+            3, parent_id,
+            4, False,
+            5, sort_order,
+            6, True
         )
         
         # Update parent's has_children flag
@@ -969,7 +1026,7 @@ class GMenEditor:
         print(f"📁 Added submenu (temp ID: {temp_id})")
     
     def on_remove(self, button):
-        """Remove selected item and its children (UI only)"""
+        """Remove selected item and its children"""
         if not self.selected_item_id:
             return
         
@@ -1013,7 +1070,7 @@ class GMenEditor:
             self.selected_item_id = None
             self.mark_unsaved_changes()
             
-            # Update sort orders for the level
+            # Update sort orders
             self.update_sort_order_for_level(parent_iter)
             
             print(f"🗑️ Removed item {item_id}")
@@ -1027,7 +1084,7 @@ class GMenEditor:
             print(f"⬆️  Moved item {self.selected_item_id} up")
         else:
             self.show_message("Already at the top!", Gtk.MessageType.INFO)
-
+    
     def on_down(self, button):
         """Move item down in UI"""
         if not self.selected_item_id:
@@ -1037,104 +1094,7 @@ class GMenEditor:
             print(f"⬇️  Moved item {self.selected_item_id} down")
         else:
             self.show_message("Already at the bottom!", Gtk.MessageType.INFO)
-
-    def move_item_up(self, item_id):
-        """Move item up in the UI tree"""
-        iter = self.get_tree_iter_by_id(item_id)
-        if not iter:
-            return False
-
-        # Get parent
-        parent_iter = self.list_store.iter_parent(iter)
-
-        # Get previous sibling
-        path = self.list_store.get_path(iter)
-        indices = path.get_indices()
-
-        if indices[-1] == 0:
-            return False  # Already at top
-
-        # Create path for previous sibling
-        prev_indices = list(indices)
-        prev_indices[-1] -= 1
-        prev_path = Gtk.TreePath.new_from_indices(prev_indices)
-        prev_iter = self.list_store.get_iter(prev_path)
-
-        if not prev_iter:
-            return False
-
-        # Move current item before previous sibling
-        # This actually reorders the tree
-        self.list_store.move_before(iter, prev_iter)
-
-        # Update sort orders
-        self.update_sort_order_for_level(parent_iter)
-
-        # Mark as dirty
-        is_new = self.list_store.get_value(iter, 6)
-        if not is_new and item_id > 0:
-            self.dirty_items.add(item_id)
-
-        # Update selection to follow moved item
-        new_path = self.list_store.get_path(iter)
-        self.treeview.scroll_to_cell(new_path, None, False, 0, 0)
-
-        self.mark_unsaved_changes()
-        return True
-
-    def move_item_down(self, item_id):
-        """Move item down in the UI tree"""
-        iter = self.get_tree_iter_by_id(item_id)
-        if not iter:
-            return False
-
-        # Get parent
-        parent_iter = self.list_store.iter_parent(iter)
-
-        # Get next sibling
-        path = self.list_store.get_path(iter)
-        indices = path.get_indices()
-
-        # Create path for next sibling
-        next_indices = list(indices)
-        next_indices[-1] += 1
-        next_path = Gtk.TreePath.new_from_indices(next_indices)
-        next_iter = self.list_store.get_iter(next_path)
-
-        if not next_iter:
-            return False  # Already at bottom
-
-        # Move next sibling before current item (equivalent to moving current down)
-        self.list_store.move_before(next_iter, iter)
-
-        # Update sort orders
-        self.update_sort_order_for_level(parent_iter)
-
-        # Mark as dirty
-        is_new = self.list_store.get_value(iter, 6)
-        if not is_new and item_id > 0:
-            self.dirty_items.add(item_id)
-
-        # Selection stays on current item (which is now in new position)
-        new_path = self.list_store.get_path(iter)
-        self.treeview.scroll_to_cell(new_path, None, False, 0, 0)
-
-        self.mark_unsaved_changes()
-        return True
-        
-        def get_next_sort_order(self, parent_iter):
-            """Get next available sort order for a level"""
-            max_order = 0
-            it = self.list_store.iter_children(parent_iter) if parent_iter else self.list_store.get_iter_first()
-            
-            while it:
-                order = self.list_store.get_value(it, 5)
-                if order > max_order:
-                    max_order = order
-                it = self.list_store.iter_next(it)
-            
-            return max_order + 1
-        
+    
     def mark_unsaved_changes(self):
         """Mark that there are unsaved changes"""
         self.unsaved_changes = True
@@ -1170,14 +1130,14 @@ class GMenEditor:
     def update_button_states(self):
         """Update button enabled/disabled states"""
         has_selection = self.selected_item_id is not None
-        self.add_btn.set_sensitive(True)  # Can always add
+        self.add_btn.set_sensitive(True)
         self.submenu_btn.set_sensitive(has_selection)
         self.remove_btn.set_sensitive(has_selection)
         self.up_btn.set_sensitive(has_selection)
         self.down_btn.set_sensitive(has_selection)
     
     def on_reload(self, button):
-        """Reload from database (discard unsaved changes)"""
+        """Reload from database"""
         if self.unsaved_changes:
             dialog = Gtk.MessageDialog(
                 transient_for=self.window,
@@ -1218,14 +1178,12 @@ class GMenEditor:
             print(f"❌ Could not launch script editor: {e}")
     
     def on_test(self, button):
-        """Test launch GMen with current menu"""
-        # First save any changes
+        """Test launch GMen"""
         if self.unsaved_changes:
             if not self.save_menu():
                 self.show_message("Please save changes before testing", Gtk.MessageType.WARNING)
                 return
         
-        # Try to launch GMen
         try:
             gmen_path = Path.cwd() / "gmen.py"
             if gmen_path.exists():
@@ -1250,7 +1208,6 @@ class GMenEditor:
             text=text
         )
         
-        # Auto-close after duration
         GLib.timeout_add(duration, dialog.destroy)
         dialog.run()
     
