@@ -218,20 +218,24 @@ class EditorMainWindow:
     
     def on_property_changed(self, item_id, field, value):
         """When a property changes"""
+        print(f"🔧 Property changed: item_id={item_id}, field={field}, value='{value}'")
+
         if field == 'window_state':
             self.change_tracker.update_window_state(item_id, value)
         else:
             self.change_tracker.mark_item_modified(item_id, field, value)
-        
+            print(f"   📝 Marked item {item_id} as modified in field '{field}'")
+
         # Update tree if title changed
         if field == 'title':
+            print(f"   🌳 Calling tree_manager.update_item_title({item_id}, '{value}')")
             self.tree_manager.update_item_title(item_id, value)
-        
+
         self.mark_unsaved_changes()
-    
+        
     def on_save(self, button):
-        """Save button clicked"""
-        self.save_menu()
+    """Save button clicked"""
+    self.save_menu()
     
     def save_menu(self):
         """Save all changes to database"""
