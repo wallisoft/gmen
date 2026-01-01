@@ -404,6 +404,32 @@ class GMenEditor:
         self.update_unsaved_indicator()
     
     # ===== TREE MANIPULATION METHODS (UI-FIRST!) =====
+
+
+    def get_next_sort_order(self, parent_iter):
+        """Get next available sort order for a level"""
+        max_order = 0
+
+        if parent_iter is None:
+            # Top level
+            it = self.list_store.get_iter_first()
+        else:
+            # Child level
+            it = self.list_store.iter_children(parent_iter)
+
+        # Iterate through all siblings
+        while it:
+            order = self.list_store.get_value(it, 5)
+            if order > max_order:
+                max_order = order
+            it = self.list_store.iter_next(it)
+
+        return max_order + 1
+
+    def handle_empty_menu(self):
+        """Handle case when menu has no items"""
+        self.info_label.set_text("Menu is empty. Click 'Add' to create first item.")
+        print("📭 Menu is empty - ready for first item")
     
     def get_tree_iter_by_id(self, item_id, parent_iter=None):
         """Find a tree iter by item ID"""
