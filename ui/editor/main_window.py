@@ -238,28 +238,30 @@ class EditorMainWindow:
         if not self.unsaved_changes and not self.change_tracker.has_changes():
             self.show_message("No changes to save", Gtk.MessageType.INFO)
             return True
-        
+
         success, message = self.save_handler.save_all(
             self.current_menu_id,
             self.change_tracker
         )
-        
+
         if success:
             # Clear change tracking
             self.change_tracker.clear()
             self.unsaved_changes = False
             self.update_unsaved_indicator()
-            
-            # Reload tree to update temp IDs to real IDs
+
+            # Reload the entire tree from database
+            # This ensures all IDs are correct
             self.tree_manager.load_menu(self.current_menu_id)
-            
+            self.property_panel.clear()
+
             self.show_message("💾 All changes saved")
             print(f"✅ Menu '{self.current_menu_name}' saved")
             return True
         else:
             self.show_message(f"❌ {message}", Gtk.MessageType.ERROR)
             return False
-    
+        
     def on_reload(self):
         """Reload from database"""
         if self.change_tracker.has_changes():
