@@ -234,8 +234,8 @@ class EditorMainWindow:
         self.mark_unsaved_changes()
         
     def on_save(self, button):
-    """Save button clicked"""
-    self.save_menu()
+        """Save button clicked"""
+        self.save_menu()
     
     def save_menu(self):
         """Save all changes to database"""
