@@ -1,4 +1,3 @@
-# ui/network_menu.py
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
@@ -13,6 +12,7 @@ class NetworkMenu:
         self.clipboard_manager = clipboard_manager
         self.discovery = discovery_service
         self.device_items = {}  # device_id -> menu_item
+        self.devices_menu_item = None  # The menu item that contains devices submenu
         
         # Setup callbacks
         if clipboard_manager:
@@ -38,11 +38,11 @@ class NetworkMenu:
         devices_header.set_sensitive(False)
         network_menu.append(devices_header)
         
-        # Devices submenu
+        # Devices submenu - store reference to the parent menu item
         self.devices_menu = Gtk.Menu()
-        devices_item = Gtk.MenuItem(label="No devices found")
-        devices_item.set_submenu(self.devices_menu)
-        network_menu.append(devices_item)
+        self.devices_menu_item = Gtk.MenuItem(label="No devices found")
+        self.devices_menu_item.set_submenu(self.devices_menu)
+        network_menu.append(self.devices_menu_item)
         
         # Refresh button
         refresh_item = Gtk.MenuItem(label="Refresh List")
@@ -101,10 +101,12 @@ class NetworkMenu:
         self.devices_menu.append(device_item)
         self.device_items[device_id] = device_item
         
-        # Update menu label
-        parent = self.devices_menu.get_parent()
-        if parent:
-            parent.set_label(f"Devices ({len(self.device_items)})")
+        # Update the devices menu item label
+        if self.devices_menu_item:
+            if self.device_items:
+                self.devices_menu_item.set_label(f"Devices ({len(self.device_items)})")
+            else:
+                self.devices_menu_item.set_label("No devices found")
         
         self.devices_menu.show_all()
     
@@ -120,7 +122,7 @@ class NetworkMenu:
     def refresh_device_list(self, menu_item):
         """Refresh the device list"""
         # Clear current items
-        for item in self.devices_menu.get_children():
+        for item in list(self.devices_menu.get_children()):
             self.devices_menu.remove(item)
         self.device_items.clear()
         
@@ -130,13 +132,12 @@ class NetworkMenu:
             for device_id, peer_info in peers.items():
                 self._add_device_item(device_id, peer_info)
         
-        # Update menu
-        parent = self.devices_menu.get_parent()
-        if parent:
+        # Update menu item label
+        if self.devices_menu_item:
             if self.device_items:
-                parent.set_label(f"Devices ({len(self.device_items)})")
+                self.devices_menu_item.set_label(f"Devices ({len(self.device_items)})")
             else:
-                parent.set_label("No devices found")
+                self.devices_menu_item.set_label("No devices found")
         
         self.show_notification("Device list refreshed", 1000)
     
@@ -185,11 +186,23 @@ class NetworkMenu:
         peers_label.set_xalign(0)
         content.pack_start(peers_label, False, False, 5)
         
+        # Local IP (helpful for debugging)
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            ip_label = Gtk.Label(label=f"Local IP: {local_ip}")
+            ip_label.set_xalign(0)
+            content.pack_start(ip_label, False, False, 5)
+        except:
+            pass
+        
         dialog.show_all()
         dialog.run()
         dialog.destroy()
     
     def show_notification(self, message, duration=2000):
         """Show a temporary notification"""
-        # Simple print for now - could integrate with your notification system
         logger.info(f"Notification: {message}")

@@ -1,4 +1,7 @@
 # network/discovery.py
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, GLib
 import socket
 import json
 import time
