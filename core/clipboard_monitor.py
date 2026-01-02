@@ -1,3 +1,5 @@
+# core/clipboard_monitor.py
+import os
 import threading
 import time
 import logging
@@ -188,9 +190,9 @@ def create_clipboard_listener(callback):
     system = platform.system()
     
     if system == "Linux":
-        # Check session type
-        display = platform.getenv("XDG_SESSION_TYPE", "").lower()
-        wayland = platform.getenv("WAYLAND_DISPLAY")
+        # Check session type - FIXED: use os.getenv
+        display = os.getenv("XDG_SESSION_TYPE", "").lower()
+        wayland = os.getenv("WAYLAND_DISPLAY")
         
         if wayland or display == "wayland":
             logger.warning("Wayland detected - clipboard events limited, using polling")
@@ -200,12 +202,10 @@ def create_clipboard_listener(callback):
             return LinuxX11Listener(callback)
     
     elif system == "Windows":
-        # TODO: Implement proper Windows listener
         logger.info("Windows detected - using polling")
         return PollingListener(callback)
     
     elif system == "Darwin":
-        # TODO: Implement proper macOS listener
         logger.info("macOS detected - using polling")
         return PollingListener(callback)
     

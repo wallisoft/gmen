@@ -17,6 +17,7 @@ class ClipboardManager:
         self.last_local_content = ""
         self.syncing = False
         self.sync_thread = None
+        self.remote_check_thread = None
         self.enabled_devices = set()  # Device IDs we sync with
         
         # Event-driven clipboard monitor
@@ -103,11 +104,11 @@ class ClipboardManager:
             self.clipboard_listener.stop()
             self.clipboard_listener = None
         
-        # Wait for threads to finish
+        # Wait for threads to finish (if they exist)
         if self.sync_thread:
-            self.sync_thread.join(timeout=2)
+            self.sync_thread.join(timeout=1)
         if self.remote_check_thread:
-            self.remote_check_thread.join(timeout=2)
+            self.remote_check_thread.join(timeout=1)
         
         logger.info("Clipboard sync stopped")
     
