@@ -11,9 +11,22 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+import logging
 
 from core.menu.builder import MenuItem, MenuBuilder
 
+# Add network imports
+try:
+    from network.discovery import LANDiscovery
+    from network.clipboard_api import ClipboardAPIServer
+    from core.clipboard_sync import ClipboardManager
+    from ui.network_menu import NetworkMenu
+    NETWORK_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"Network modules not available: {e}")
+    NETWORK_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 class GMenApp:
     """Main application UI"""
@@ -24,6 +37,16 @@ class GMenApp:
         self.network_mgr = network_mgr
         self.config = config
         self.dry_run = dry_run
+        
+        # Network services
+        self.discovery = None
+        self.clipboard_manager = None
+        self.api_server = None
+        self.network_menu_obj = None
+        
+        # Initialize network if requested
+        if network_mgr and NETWORK_AVAILABLE:
+            self._init_network_services()
         
         # Build menu
         self.menu_builder = MenuBuilder(db)
@@ -36,7 +59,40 @@ class GMenApp:
         self._build_menu()
         
         print("🎯 GMen started - Running in system tray")
+        if network_mgr and self.discovery:
+            print(f"🌐 Network: Device ID {self.discovery.device_id[:16]}...")
         self.menu_builder.print_menu(self.menu_root)
+    
+    def _init_network_services(self):
+        """Initialize network clipboard sync services"""
+        try:
+            # Initialize discovery
+            self.discovery = LANDiscovery()
+            if not self.discovery.start():
+                raise Exception("Failed to start discovery service")
+            
+            # Initialize clipboard manager
+            self.clipboard_manager = ClipboardManager(self.discovery)
+            
+            # Initialize API server
+            self.api_server = ClipboardAPIServer(
+                port=8721,
+                clipboard_manager=self.clipboard_manager
+            )
+            if not self.api_server.start():
+                raise Exception("Failed to start API server")
+            
+            # Initialize network menu
+            self.network_menu_obj = NetworkMenu(self.clipboard_manager, self.discovery)
+            
+            logger.info("✅ Network clipboard sync initialized")
+            
+        except Exception as e:
+            logger.error(f"⚠️ Network services disabled: {e}")
+            self.discovery = None
+            self.clipboard_manager = None
+            self.api_server = None
+            self.network_menu_obj = None
     
     def _create_tray_icon(self):
         """Create system tray icon"""
@@ -145,24 +201,18 @@ class GMenApp:
             load_ws = Gtk.MenuItem.new_with_label("📂 Load Workspace")
             load_ws.connect('activate', self._load_workspace_dialog)
             config_menu.append(load_ws)
+            
+            config_menu.append(Gtk.SeparatorMenuItem())
         
-        # Network items if enabled
-        if self.network_mgr:
-            network_item = Gtk.MenuItem.new_with_label("🌐 Network")
-            network_menu = Gtk.Menu()
-            
-            hosts = self.network_mgr.get_connected_hosts() if hasattr(self.network_mgr, 'get_connected_hosts') else []
-            if hosts:
-                for host in hosts:
-                    host_item = Gtk.MenuItem.new_with_label(f"📡 {host.get('hostname', 'Unknown')}")
-                    host_item.set_sensitive(host.get('reachable', False))
-                    network_menu.append(host_item)
-            else:
-                none_item = Gtk.MenuItem.new_with_label("No hosts found")
-                none_item.set_sensitive(False)
-                network_menu.append(none_item)
-            
-            network_item.set_submenu(network_menu)
+        # Network submenu (if enabled)
+        if self.network_menu_obj:
+            network_item = Gtk.MenuItem(label="🌐 Network")
+            network_item.set_submenu(self.network_menu_obj.create_network_menu())
+            config_menu.append(network_item)
+        elif self.network_mgr:
+            # Show disabled network option
+            network_item = Gtk.MenuItem(label="🌐 Network (clipboard sync unavailable)")
+            network_item.set_sensitive(False)
             config_menu.append(network_item)
         
         config_menu.append(Gtk.SeparatorMenuItem())
@@ -229,7 +279,15 @@ class GMenApp:
         """Quit application"""
         print("🛑 Quitting GMen...")
         
-        # Cleanup
+        # Cleanup network services
+        if self.discovery:
+            self.discovery.stop()
+        if self.api_server:
+            self.api_server.stop()
+        if self.clipboard_manager:
+            self.clipboard_manager.stop_sync()
+        
+        # Cleanup other services
         if self.window_mgr:
             self.window_mgr.cleanup()
         
