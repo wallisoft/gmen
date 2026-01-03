@@ -1,14 +1,15 @@
 """
-Main editor window - Clean integration
+Main editor window - Clean integration with SIMPLE ListManager
 """
 
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 
-from ui.editor.tree_manager import TreeManager
+from ui.editor.list_manager import ListManager
 from ui.editor.property_panel import PropertyPanel
 from ui.editor.toolbar import Toolbar
+from core.editor.menu_model import MenuItem  # For temporary items
 
 
 class EditorMainWindow:
@@ -25,7 +26,7 @@ class EditorMainWindow:
         
         # UI components
         self.window = None
-        self.tree_manager = None
+        self.list_manager = None
         self.property_panel = None
         self.toolbar = None
         
@@ -61,25 +62,22 @@ class EditorMainWindow:
         content_hbox.set_margin_end(5)
         main_vbox.pack_start(content_hbox, True, True, 0)
         
-        # Create tree manager (connected to model)
-        self.tree_manager = TreeManager(self.db, self.model)
-        self.tree_manager.on_selection_changed = self.on_tree_selection_changed
-        self.tree_manager.on_item_modified = self.on_item_modified
+        # Create SIMPLE list manager
+        self.list_manager = ListManager(self.db, self.model)
+        self.list_manager.on_selection_changed = self.on_list_selection_changed
+        self.list_manager.on_item_modified = self.on_item_modified
         
-        # Create property panel (with script dropdown)
+        # Create property panel
         self.property_panel = PropertyPanel(self.db)
         self.property_panel.on_property_changed = self.on_property_changed
         
-        # Add tree panel (left)
-        tree_frame = self.tree_manager.create_nav_panel()
-        content_hbox.pack_start(tree_frame, True, True, 0)
+        # Add list panel (left)
+        list_frame = self.list_manager.create_nav_panel()
+        content_hbox.pack_start(list_frame, True, True, 0)
         
         # Add property panel (right)
         property_frame = self.property_panel.create_panel()
         content_hbox.pack_start(property_frame, False, False, 0)
-        
-        # Load initial data into tree
-        self.tree_manager.rebuild_tree()
         
         # Show window
         self.window.show_all()
@@ -87,7 +85,7 @@ class EditorMainWindow:
         # Load CSS
         self._load_css()
         
-        print("✅ Editor UI initialized")
+        print("✅ Editor UI initialized with SIMPLE ListManager")
     
     def run(self):
         """Run the main GTK loop"""
@@ -106,61 +104,87 @@ class EditorMainWindow:
         
         Gtk.main_quit()
     
-    def on_tree_selection_changed(self, item_id):
-        """Handle tree selection change"""
+    def on_list_selection_changed(self, item_id):
+        """Handle list selection change"""
+        print(f"📌 List selection changed: {item_id}")
         self.selected_item_id = item_id
         
-        # Update property panel with selected item
         if item_id:
-            item = self.model.get_item(item_id)
-            if item:
-                self.property_panel.load_item(item)
+            # Get properties from list manager
+            props = self.list_manager.get_item_properties(item_id)
+            if props:
+                # Create a temporary model item for the property panel
+                temp_item = MenuItem(
+                    id=item_id,
+                    title=props.get('title', ''),
+                    command=props.get('command', ''),
+                    icon=props.get('icon', ''),
+                    window_state=props.get('window_state')
+                )
+                # Try to get DB ID if available
+                selected_item = self.list_manager.get_selected_item()
+                if selected_item and selected_item.db_id:
+                    temp_item.db_id = selected_item.db_id
+                
+                self.property_panel.load_item(temp_item)
+                print(f"📋 Loaded properties for item {item_id}")
             else:
                 self.property_panel.clear()
+                print(f"⚠️ No properties found for item {item_id}")
         else:
             self.property_panel.clear()
+            print("📋 Selection cleared")
     
     def on_item_modified(self, item_id, field, value):
-        """Handle item modification from tree"""
-        print(f"📝 Tree modified: {item_id}.{field} = {value}")
+        """Handle item modification from list manager"""
+        print(f"📝 List modified: {item_id}.{field} = {value}")
         
         # Update change tracker
         self.change_tracker.mark_item_modified(item_id, field, value)
         
+        # Mark model as modified
+        self.model.is_modified = True
+        
         # Update toolbar status
-        self.toolbar.set_unsaved_changes(self.model.has_changes())
+        self.toolbar.set_unsaved_changes(True)
     
     def on_property_changed(self, item_id, field, value):
         """Handle property change from property panel"""
         print(f"⚙️ Property changed: {item_id}.{field} = {value}")
-
+        
         if field == 'title':
-            # FIXED: Update tree IMMEDIATELY with debounce protection
-            GLib.idle_add(self._update_title_delayed, item_id, value)
+            # Update in list manager
+            if self.list_manager.update_item_title(item_id, value):
+                print(f"✅ Updated title in list")
         else:
-            # Update in model
-            self.model.update_item(item_id, **{field: value})
-
-            # If icon changed, tree might need refresh
+            # Update in list manager's properties
+            update_data = {field: value}
+            self.list_manager.update_item_properties(item_id, **update_data)
+            
+            # If icon changed, refresh might be needed
             if field == 'icon':
-                self.tree_manager.refresh_item(item_id)
-
+                pass  # Icon updates are handled by property panel
+        
         # Update change tracker
         self.change_tracker.mark_item_modified(item_id, field, value)
-
+        
+        # Mark model as modified
+        self.model.is_modified = True
+        
         # Update toolbar
-        self.toolbar.set_unsaved_changes(self.model.has_changes())
-
-    def _update_title_delayed(self, item_id, value):
-        """Update title with debounce to avoid recursion"""
-        # Update in tree (immediate)
-        if self.tree_manager.update_item_title(item_id, value):
-            print(f"✅ Updated title in tree")
-        return False  # Don't repeat
+        self.toolbar.set_unsaved_changes(True)
     
     def on_save(self):
         """Handle save button click"""
         print("💾 Save requested...")
+        
+        # First convert display list back to model
+        print("🔄 Converting display list to model...")
+        success = self.list_manager.save_to_model(self.model)
+        
+        if not success:
+            self.toolbar.show_message("Save failed: could not convert to model")
+            return
         
         if not self.model.has_changes():
             self.toolbar.show_message("No changes to save")
@@ -168,6 +192,10 @@ class EditorMainWindow:
         
         summary = self.change_tracker.get_change_summary()
         print(f"📊 Changes to save: {summary}")
+        
+        if summary['total'] == 0:
+            self.toolbar.show_message("No changes to save")
+            return
         
         self.toolbar.show_message("Saving...")
         
@@ -178,12 +206,17 @@ class EditorMainWindow:
             self.toolbar.show_message(f"Saved {summary['total']} changes")
             self.toolbar.set_unsaved_changes(False)
             
-            # Refresh tree to update temp→real IDs
-            self.tree_manager.rebuild_tree()
+            # Clear change tracker
+            self.change_tracker.clear()
             
-            # Restore selection if possible
+            # Refresh list to update DB IDs
+            self.list_manager.rebuild_list()
+            
+            # Re-select current item if any
             if self.selected_item_id:
-                self.tree_manager.selection.unselect_all()
+                # Selection will be restored by rebuild_list
+                pass
+                
         else:
             self.toolbar.show_message(f"Save failed: {message}")
     
@@ -198,14 +231,17 @@ class EditorMainWindow:
         # Reload from database
         self.model.load_from_db(self.db)
         
-        # Rebuild tree
-        self.tree_manager.rebuild_tree()
+        # Rebuild list from fresh model
+        self.list_manager.rebuild_list()
         
         # Clear property panel
         self.property_panel.clear()
         
         # Clear selection
         self.selected_item_id = None
+        
+        # Clear change tracker
+        self.change_tracker.clear()
         
         # Update toolbar
         self.toolbar.set_unsaved_changes(False)
@@ -214,7 +250,20 @@ class EditorMainWindow:
     def on_debug(self):
         """Handle debug button click"""
         print("\n=== DEBUG ===")
+        print("Model:")
         self.model.print_debug()
+        
+        print("\nDisplay items:")
+        selected = self.list_manager.get_selected_item()
+        if selected:
+            print(f"Selected: {selected}")
+        else:
+            print("No selection")
+        
+        print(f"Display items count: {len(self.list_manager.display_items)}")
+        for i, item in enumerate(self.list_manager.display_items):
+            print(f"  [{i}] {item}")
+        
         print("=============")
         self.toolbar.show_message("Debug info printed to console")
     
@@ -243,6 +292,19 @@ class EditorMainWindow:
         }
         .dim-label {
             opacity: 0.7;
+        }
+        .list-row {
+            padding: 3px;
+        }
+        .list-row:selected {
+            background-color: #3584e4;
+            color: white;
+        }
+        .indent-button {
+            font-weight: bold;
+        }
+        .outdent-button {
+            font-weight: bold;
         }
         """
         
