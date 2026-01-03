@@ -1,0 +1,187 @@
+"""
+Property panel for editing item properties
+"""
+
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, GLib
+
+
+class PropertyPanel:
+    """Panel for editing item properties"""
+    
+    def __init__(self):
+        # Callbacks
+        self.on_property_changed = None
+        
+        # Current item
+        self.current_item_id = None
+        
+        # UI widgets
+        self.title_entry = None
+        self.command_entry = None
+        self.icon_entry = None
+        self.depth_label = None
+        self.id_label = None
+        self.parent_label = None
+        
+        # Initialize UI
+        self._init_widgets()
+    
+    def _init_widgets(self):
+        """Initialize the UI widgets"""
+        # Create entry widgets
+        self.title_entry = Gtk.Entry()
+        self.title_entry.set_placeholder_text("Item Title")
+        self.title_entry.connect("changed", self._on_title_changed)
+        
+        self.command_entry = Gtk.Entry()
+        self.command_entry.set_placeholder_text("Command to execute")
+        self.command_entry.connect("changed", self._on_command_changed)
+        
+        self.icon_entry = Gtk.Entry()
+        self.icon_entry.set_placeholder_text("Icon path or name")
+        self.icon_entry.connect("changed", self._on_icon_changed)
+        
+        # Labels for read-only properties
+        self.id_label = Gtk.Label(label="ID: --")
+        self.depth_label = Gtk.Label(label="Depth: --")
+        self.parent_label = Gtk.Label(label="Parent: --")
+        
+        # Status label
+        self.status_label = Gtk.Label(label="No item selected")
+        self.status_label.get_style_context().add_class("dim-label")
+    
+    def create_panel(self):
+        """Create the property panel frame"""
+        frame = Gtk.Frame(label="📝 Properties")
+        frame.set_shadow_type(Gtk.ShadowType.IN)
+        
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vbox.set_margin_top(10)
+        vbox.set_margin_bottom(10)
+        vbox.set_margin_start(10)
+        vbox.set_margin_end(10)
+        frame.add(vbox)
+        
+        # Title
+        title_label = Gtk.Label(label="<b>Title</b>")
+        title_label.set_use_markup(True)
+        title_label.set_xalign(0)
+        vbox.pack_start(title_label, False, False, 0)
+        vbox.pack_start(self.title_entry, False, False, 0)
+        
+        # Command
+        cmd_label = Gtk.Label(label="<b>Command</b>")
+        cmd_label.set_use_markup(True)
+        cmd_label.set_xalign(0)
+        vbox.pack_start(cmd_label, False, False, 5)
+        vbox.pack_start(self.command_entry, False, False, 0)
+        
+        # Icon
+        icon_label = Gtk.Label(label="<b>Icon</b>")
+        icon_label.set_use_markup(True)
+        icon_label.set_xalign(0)
+        vbox.pack_start(icon_label, False, False, 5)
+        vbox.pack_start(self.icon_entry, False, False, 0)
+        
+        # Separator
+        vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 10)
+        
+        # Read-only properties in a grid
+        grid = Gtk.Grid()
+        grid.set_column_spacing(10)
+        grid.set_row_spacing(5)
+        
+        grid.attach(Gtk.Label(label="<b>ID:</b>", use_markup=True), 0, 0, 1, 1)
+        grid.attach(self.id_label, 1, 0, 1, 1)
+        
+        grid.attach(Gtk.Label(label="<b>Depth:</b>", use_markup=True), 0, 1, 1, 1)
+        grid.attach(self.depth_label, 1, 1, 1, 1)
+        
+        grid.attach(Gtk.Label(label="<b>Parent:</b>", use_markup=True), 0, 2, 1, 1)
+        grid.attach(self.parent_label, 1, 2, 1, 1)
+        
+        vbox.pack_start(grid, False, False, 0)
+        
+        # Separator
+        vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 10)
+        
+        # Status
+        vbox.pack_start(self.status_label, False, False, 0)
+        
+        # Expand at the end
+        vbox.pack_start(Gtk.Label(), True, True, 0)
+        
+        return frame
+    
+    def load_item(self, item):
+        """Load item properties into the panel"""
+        self.current_item_id = item.id
+        
+        # Update fields
+        self.title_entry.set_text(item.title)
+        self.command_entry.set_text(item.command or "")
+        self.icon_entry.set_text(item.icon or "")
+        
+        # Update labels
+        db_id_str = str(item.db_id) if item.db_id else f"temp:{item.id[:8]}"
+        self.id_label.set_text(f"{db_id_str}")
+        
+        self.depth_label.set_text(f"{item.depth}")
+        
+        parent_str = "None"
+        if item.parent_id:
+            parent_str = f"{item.parent_id[:8]}..."
+        self.parent_label.set_text(parent_str)
+        
+        # Update status
+        status = []
+        if item.is_new: status.append("NEW")
+        if item.is_modified: status.append("MODIFIED")
+        if item.is_deleted: status.append("DELETED")
+        status_text = f"• {' '.join(status)}" if status else "• Clean"
+        self.status_label.set_text(status_text)
+        
+        print(f"📋 PropertyPanel loaded item {item.id}")
+    
+    def clear(self):
+        """Clear the property panel"""
+        self.current_item_id = None
+        self.title_entry.set_text("")
+        self.command_entry.set_text("")
+        self.icon_entry.set_text("")
+        self.id_label.set_text("ID: --")
+        self.depth_label.set_text("Depth: --")
+        self.parent_label.set_text("Parent: --")
+        self.status_label.set_text("No item selected")
+        
+        print("📋 PropertyPanel cleared")
+    
+    def _on_title_changed(self, entry):
+        """Handle title change"""
+        if self.current_item_id and self.on_property_changed:
+            new_title = entry.get_text()
+            self.on_property_changed(self.current_item_id, 'title', new_title)
+    
+    def _on_command_changed(self, entry):
+        """Handle command change"""
+        if self.current_item_id and self.on_property_changed:
+            new_command = entry.get_text()
+            self.on_property_changed(self.current_item_id, 'command', new_command)
+    
+    def _on_icon_changed(self, entry):
+        """Handle icon change"""
+        if self.current_item_id and self.on_property_changed:
+            new_icon = entry.get_text()
+            self.on_property_changed(self.current_item_id, 'icon', new_icon)
+    
+    def update_status(self, message):
+        """Update status label"""
+        self.status_label.set_text(message)
+    
+    def set_readonly(self, readonly):
+        """Set all fields to readonly state"""
+        self.title_entry.set_editable(not readonly)
+        self.command_entry.set_editable(not readonly)
+        self.icon_entry.set_editable(not readonly)

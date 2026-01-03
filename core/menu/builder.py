@@ -61,12 +61,14 @@ class MenuBuilder:
     
     def build_menu(self, menu_id: int) -> MenuItem:
         """Build menu hierarchy for given menu ID"""
-        items = self.db.fetch("""
+        # FIXED: Changed .fetch() to .fetch_all()
+        # FIXED: Changed ws.monitor to ws.display (to match database schema)
+        items = self.db.fetch_all("""
             SELECT mi.id, mi.title, mi.command, mi.icon, mi.depth,
                    mi.parent_id, mi.sort_order, mi.script_id,
-                   ws.x, ws.y, ws.width, ws.height, ws.monitor
+                   ws.x, ws.y, ws.width, ws.height, ws.display
             FROM menu_items mi
-            LEFT JOIN window_states ws ON mi.id = ws.menu_item_id AND ws.is_active = 1
+            LEFT JOIN window_states ws ON mi.id = ws.item_id
             WHERE mi.menu_id = ?
             ORDER BY mi.depth, mi.sort_order
         """, (menu_id,))
@@ -96,7 +98,7 @@ class MenuBuilder:
                     'y': item_data['y'],
                     'width': item_data['width'],
                     'height': item_data['height'],
-                    'monitor': item_data['monitor'] or 0
+                    'display': item_data['display'] or 0
                 }
             
             item_map[item.id] = item

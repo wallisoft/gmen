@@ -289,7 +289,7 @@ class GMenApp:
         
         # Cleanup other services
         if self.window_mgr:
-            self.window_mgr.cleanup()
+            self.window_mgr.close()
         
         if self.network_mgr:
             self.network_mgr.stop()

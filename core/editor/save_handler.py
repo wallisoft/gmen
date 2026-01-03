@@ -1,193 +1,165 @@
 """
-Save handler for editor changes
+Save handler for MenuModel
 """
 
 import json
-import logging
-
-logger = logging.getLogger(__name__)
+from typing import Tuple, Dict, List, Optional
 
 
 class SaveHandler:
-    """Handles saving tracked changes to database"""
+    """Handles saving MenuModel to database including window states"""
     
     def __init__(self, db):
         self.db = db
     
-    def save_all(self, menu_id, change_tracker):
-        """Save all tracked changes to database"""
+    def save_model(self, menu_model) -> Tuple[bool, str]:
+        """Save entire model to database including window states"""
+        if not menu_model.has_changes():
+            return True, "No changes to save"
+        
+        print(f"💾 Saving menu '{menu_model.name}' (ID: {menu_model.id})...")
+        
         try:
-            print(f"💾 SaveHandler: Starting save for menu {menu_id}")
-            print(f"   Change summary: {change_tracker.get_change_summary()}")
-            
             with self.db.transaction():
-                # 1. Save menu metadata
-                if change_tracker.menu_modified:
-                    self._save_menu_metadata(menu_id, change_tracker)
+                changes = menu_model.get_items_for_save()
                 
-                # 2. First pass: Save all new items and build temp→real ID map
-                temp_to_real_map = {}
+                # Update menu name if changed
+                if changes['name_modified']:
+                    self.db.execute(
+                        "UPDATE menus SET name = ? WHERE id = ?",
+                        (menu_model.name, menu_model.id)
+                    )
+                    print(f"✏️ Updated menu name to '{menu_model.name}'")
                 
-                # We need to save parents before children
-                # Sort new items by depth (0 = top level, 1 = children, 2 = grandchildren, etc.)
+                # Track ID mapping for new items
+                temp_to_real = {}
+                
+                # 1. Process deletions first
+                for item in changes['deleted']:
+                    self._delete_item(item.db_id)
+                
+                # 2. Process new items (need to handle parent references)
+                # Sort by depth so parents are created before children
                 new_items_by_depth = {}
-                for temp_id, data in change_tracker.new_items.items():
-                    depth = data.get('depth', 0)
-                    if depth not in new_items_by_depth:
-                        new_items_by_depth[depth] = []
-                    new_items_by_depth[depth].append({'temp_id': temp_id, 'data': data})
+                for item in changes['new']:
+                    if item.depth not in new_items_by_depth:
+                        new_items_by_depth[item.depth] = []
+                    new_items_by_depth[item.depth].append(item)
                 
-                print(f"💾 SaveHandler: New items by depth: {new_items_by_depth}")
-                
-                # Process from shallowest to deepest
                 for depth in sorted(new_items_by_depth.keys()):
-                    print(f"💾 SaveHandler: Processing depth {depth}...")
-                    for new_item in new_items_by_depth[depth]:
-                        real_id = self._save_new_item(menu_id, new_item, temp_to_real_map)
-                        temp_id = new_item['temp_id']
-                        temp_to_real_map[temp_id] = real_id
+                    for item in new_items_by_depth[depth]:
+                        real_id = self._save_new_item(menu_model.id, item, temp_to_real)
+                        temp_to_real[item.id] = real_id
+                        item.db_id = real_id
+                        item.is_new = False
                         
-                        # Update change tracker mapping
-                        print(f"💾 SaveHandler: Calling update_temp_id_mapping({temp_id}, {real_id})")
-                        change_tracker.update_temp_id_mapping(temp_id, real_id)
+                        # Save window state if exists
+                        if item.window_state:
+                            self._save_window_state(real_id, item.window_state)
                 
-                print(f"💾 SaveHandler: Temp→Real map after new items: {temp_to_real_map}")
-                
-                # 3. Save modified items (update any temp parent references)
-                print(f"💾 SaveHandler: Saving {len(change_tracker.modified_items)} modified items...")
-                for item_id, changes in change_tracker.modified_items.items():
-                    print(f"💾 SaveHandler: Processing item {item_id} changes: {changes}")
+                # 3. Process modified items
+                for item in changes['modified']:
+                    self._save_existing_item(item, temp_to_real)
                     
-                    # Fix temp parent IDs in modifications
-                    if 'parent_id' in changes and changes['parent_id'] is not None:
-                        parent_id = changes['parent_id']
-                        if parent_id < 0:  # It's a temp ID
-                            if parent_id in temp_to_real_map:
-                                changes['parent_id'] = temp_to_real_map[parent_id]
-                                print(f"💾 SaveHandler: Mapped parent temp {parent_id} → real {changes['parent_id']}")
-                            else:
-                                print(f"⚠️ Modified item {item_id} references unknown temp parent {parent_id}")
-                                changes['parent_id'] = None
-                    
-                    self._save_item_changes(item_id, changes)
+                    # Save window state if exists
+                    if item.window_state:
+                        self._save_window_state(item.db_id, item.window_state)
                 
-                # 4. Process window state changes
-                if change_tracker.window_state_changes:
-                    print(f"💾 SaveHandler: Saving {len(change_tracker.window_state_changes)} window states...")
-                    for item_id, state in change_tracker.window_state_changes.items():
-                        self._update_window_state(item_id, state)
+                # 4. Update parent references for items with temp parents
+                for item in menu_model.items.values():
+                    if not item.is_deleted and item.db_id and item.parent_id:
+                        if item.parent_id.startswith('temp_'):
+                            real_parent_id = temp_to_real.get(item.parent_id)
+                            if real_parent_id:
+                                self.db.execute(
+                                    "UPDATE menu_items SET parent_id = ? WHERE id = ?",
+                                    (real_parent_id, item.db_id)
+                                )
                 
-                # 5. Process deletions
-                if change_tracker.deleted_items:
-                    print(f"💾 SaveHandler: Deleting {len(change_tracker.deleted_items)} items...")
-                    for item_id in change_tracker.deleted_items:
-                        self._delete_item(item_id)
+                # Clear modification flags
+                menu_model.is_modified = False
+                menu_model.name_modified = False
+                for item in menu_model.items.values():
+                    item.is_modified = False
+                    item.is_deleted = False
             
-            print(f"💾 SaveHandler: Save completed successfully for menu {menu_id}")
-            return True, "Changes saved"
+            total = len(changes['new']) + len(changes['modified']) + len(changes['deleted'])
+            print(f"✅ Saved {total} changes successfully")
+            return True, f"Saved {total} changes"
             
         except Exception as e:
-            print(f"❌ SaveHandler: Save failed: {e}")
+            print(f"❌ Save failed: {e}")
             import traceback
             traceback.print_exc()
             return False, str(e)
     
-    def _save_menu_metadata(self, menu_id, change_tracker):
-        """Save menu name and default status"""
-        updates = []
-        params = []
-        
-        if change_tracker.new_menu_name is not None:
-            updates.append("name = ?")
-            params.append(change_tracker.new_menu_name)
-        
-        if change_tracker.new_default_status is not None:
-            # If setting this as default, first clear any existing default
-            if change_tracker.new_default_status:
-                self.db.execute("UPDATE menus SET is_default = 0 WHERE is_default = 1")
-            
-            updates.append("is_default = ?")
-            params.append(1 if change_tracker.new_default_status else 0)
-        
-        if updates:
-            params.append(menu_id)
-            query = f"UPDATE menus SET {', '.join(updates)} WHERE id = ?"
-            self.db.execute(query, tuple(params))
-            print(f"💾 SaveHandler: Updated menu {menu_id} metadata")
-    
-    def _save_item_changes(self, item_id, changes):
-        """Save modifications to an existing item"""
-        if not changes:
-            return
-        
-        updates = []
-        params = []
-        
-        for field, value in changes.items():
-            if field == 'window_state':
-                # Window state is handled separately
-                continue
-            elif field == 'icon' and not value:
-                # Empty icon should be NULL
-                updates.append("icon = NULL")
+    def _save_new_item(self, menu_id: int, item, temp_to_real: Dict) -> int:
+        """Save new item and return its real DB ID"""
+        parent_db_id = None
+        if item.parent_id:
+            # Check if parent is new (temp) or existing
+            if item.parent_id.startswith('temp_'):
+                parent_db_id = temp_to_real.get(item.parent_id)
             else:
-                updates.append(f"{field} = ?")
-                params.append(value)
+                parent_db_id = int(item.parent_id) if item.parent_id.isdigit() else None
         
-        if not updates:
-            return
-        
-        params.append(item_id)
-        query = f"UPDATE menu_items SET {', '.join(updates)} WHERE id = ?"
-        self.db.execute(query, tuple(params))
-        print(f"💾 SaveHandler: Updated item {item_id}: {changes}")
-    
-    def _save_new_item(self, menu_id, new_item, temp_to_real_map=None):
-        """Save a new item and return its real ID - FIXED for temp parent IDs"""
-        temp_id = new_item['temp_id']
-        data = new_item['data']
-        
-        print(f"💾 SaveHandler: Saving new item temp {temp_id}: {data}")
-        
-        # Handle temp parent IDs
-        parent_id = data.get('parent_id')
-        if parent_id is not None and parent_id < 0 and temp_to_real_map:
-            # It's a temp ID, try to map it
-            if parent_id in temp_to_real_map:
-                parent_id = temp_to_real_map[parent_id]
-                print(f"💾 SaveHandler: Mapped parent temp {new_item['data'].get('parent_id')} → real {parent_id}")
-            else:
-                print(f"⚠️ New item temp {temp_id} has temp parent ID {parent_id} not in map")
-                print(f"   Temp→Real map: {temp_to_real_map}")
-                # If we're at depth > 0 but parent not found, something's wrong
-                if data.get('depth', 0) > 0:
-                    print(f"   ⚠️ Item at depth {data.get('depth')} will be orphaned!")
-                parent_id = None
-        
-        # Insert the new item
         self.db.execute("""
             INSERT INTO menu_items 
-            (menu_id, parent_id, title, command, icon, sort_order, depth)
+            (menu_id, title, command, icon, depth, parent_id, sort_order)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             menu_id,
-            parent_id,
-            data.get('title', 'New Item'),
-            data.get('command', ''),
-            data.get('icon'),
-            data.get('sort_order', 1),
-            data.get('depth', 0)
+            item.title,
+            item.command,
+            item.icon or None,
+            item.depth,
+            parent_db_id,
+            item.sort_order
         ))
         
         result = self.db.fetch_one("SELECT last_insert_rowid() AS id")
         real_id = result['id']
         
-        print(f"💾 SaveHandler: New item temp {temp_id} → real ID {real_id}")
+        print(f"➕ Saved new item: {item.title} → DB ID {real_id}")
         return real_id
     
-    def _update_window_state(self, item_id, window_state):
-        """Save window state for an item"""
-        # First, delete any existing window state
+    def _save_existing_item(self, item, temp_to_real: Dict) -> None:
+        """Update existing item"""
+        parent_db_id = None
+        if item.parent_id:
+            if item.parent_id.startswith('temp_'):
+                parent_db_id = temp_to_real.get(item.parent_id)
+            else:
+                parent_db_id = int(item.parent_id) if item.parent_id.isdigit() else None
+        
+        self.db.execute("""
+            UPDATE menu_items 
+            SET title = ?, command = ?, icon = ?, 
+                depth = ?, parent_id = ?, sort_order = ?
+            WHERE id = ?
+        """, (
+            item.title,
+            item.command,
+            item.icon or None,
+            item.depth,
+            parent_db_id,
+            item.sort_order,
+            item.db_id
+        ))
+        
+        print(f"✏️ Updated item: {item.title} (DB ID: {item.db_id})")
+    
+    def _delete_item(self, db_id: int) -> None:
+        """Delete item from database including window states"""
+        # Delete window states first (foreign key)
+        self.db.execute("DELETE FROM window_states WHERE item_id = ?", (db_id,))
+        # Delete item
+        self.db.execute("DELETE FROM menu_items WHERE id = ?", (db_id,))
+        print(f"🗑️ Deleted item DB ID: {db_id}")
+    
+    def _save_window_state(self, item_id: int, window_state: Dict) -> None:
+        """Save window state for item"""
+        # Delete existing window state
         self.db.execute("DELETE FROM window_states WHERE item_id = ?", (item_id,))
         
         # Insert new window state
@@ -201,18 +173,19 @@ class SaveHandler:
             window_state.get('y'),
             window_state.get('width'),
             window_state.get('height'),
-            json.dumps(window_state.get('state', {})),
+            window_state.get('state'),
             window_state.get('display', 0)
         ))
-        
-        print(f"💾 SaveHandler: Updated window state for item {item_id}")
+        print(f"💾 Saved window state for item {item_id}")
     
-    def _delete_item(self, item_id):
-        """Delete an item and its window states"""
-        # Delete window states first (foreign key constraint)
-        self.db.execute("DELETE FROM window_states WHERE item_id = ?", (item_id,))
-        
-        # Delete the item
-        self.db.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
-        
-        print(f"💾 SaveHandler: Deleted item {item_id}")
+    def export_menu(self, menu_id: int, export_path: str) -> bool:
+        """Export menu to JSON file (stub implementation)"""
+        print(f"📤 Exporting menu {menu_id} to {export_path}")
+        # TODO: Implement JSON export
+        return True
+    
+    def import_menu(self, import_path: str) -> Optional[int]:
+        """Import menu from JSON file (stub implementation)"""
+        print(f"📥 Importing menu from {import_path}")
+        # TODO: Implement JSON import
+        return None
