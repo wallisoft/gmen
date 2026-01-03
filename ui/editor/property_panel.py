@@ -6,6 +6,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GdkPixbuf, GLib
 import os
+import subprocess
 from typing import Optional
 
 
@@ -20,12 +21,13 @@ class PropertyPanel:
         # UI widgets
         self.title_entry = None
         self.command_entry = None
-        self.command_button = None  # CHANGED: from combo to button
+        self.command_button = None
         self.icon_entry = None
         self.icon_button = None
         self.icon_preview = None
         
-        # Window controls (NEW)
+        # Window controls
+        self.remember_window_cb = None
         self.window_x_entry = None
         self.window_y_entry = None
         self.window_width_entry = None
@@ -48,9 +50,9 @@ class PropertyPanel:
         self.command_entry.set_placeholder_text("Command or @scriptname")
         self.command_entry.connect("changed", self._on_command_changed)
         
-        self.command_button = Gtk.Button(label="...")
-        self.command_button.set_tooltip_text("Select script")
-        self.command_button.set_size_request(40, -1)
+        self.command_button = Gtk.Button(label="📝 Script")
+        self.command_button.set_tooltip_text("Select or edit scripts")
+        self.command_button.set_size_request(100, -1)
         self.command_button.connect("clicked", self._on_script_dialog)
         
         command_box.pack_start(self.command_entry, True, True, 0)
@@ -79,7 +81,11 @@ class PropertyPanel:
         
         self.icon_container = icon_box
         
-        # Window positioning controls (NEW)
+        # Window positioning checkbox
+        self.remember_window_cb = Gtk.CheckButton(label="Remember Window Position")
+        self.remember_window_cb.connect("toggled", self._on_window_remember_toggled)
+        
+        # Window positioning controls
         window_box = Gtk.Grid()
         window_box.set_column_spacing(5)
         window_box.set_row_spacing(5)
@@ -133,9 +139,10 @@ class PropertyPanel:
         self.type_label = Gtk.Label(label="Type: --")
     
     def create_panel(self):
-        """Create the property panel frame"""
+        """Create the property panel frame - 50% wider"""
         frame = Gtk.Frame(label="⚙️ Properties")
         frame.set_shadow_type(Gtk.ShadowType.IN)
+        frame.set_size_request(400, -1)  # 50% wider than typical 250-300px
         
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         vbox.set_margin_top(12)
@@ -156,17 +163,17 @@ class PropertyPanel:
         vbox.pack_start(self._create_label("Icon"), False, False, 5)
         vbox.pack_start(self.icon_container, False, False, 0)
         
-        # Window positioning (NEW)
+        # Window positioning with checkbox
         vbox.pack_start(self._create_label("Window Position"), False, False, 10)
+        vbox.pack_start(self.remember_window_cb, False, False, 5)
         vbox.pack_start(self.window_container, False, False, 0)
-
-        # Tile button (NEW)
+        
+        # Tile button
         tile_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         tile_btn = Gtk.Button.new_with_label("⎔ Tile Alongside")
         tile_btn.set_tooltip_text("Position this window next to the last positioned window")
         tile_btn.connect("clicked", self._on_tile_clicked)
         tile_box.pack_start(tile_btn, False, False, 0)
-
         vbox.pack_start(tile_box, False, False, 5)
         
         # Separator
@@ -219,7 +226,10 @@ class PropertyPanel:
         # Update icon preview
         self._update_icon_preview(item.icon or "")
         
-        # Load window state (NEW)
+        # Load window state
+        has_window_state = bool(item.window_state)
+        self.remember_window_cb.set_active(has_window_state)
+        
         if item.window_state:
             self.window_x_entry.set_text(str(item.window_state.get('x', '')))
             self.window_y_entry.set_text(str(item.window_state.get('y', '')))
@@ -267,6 +277,7 @@ class PropertyPanel:
         self.icon_preview.clear()
         
         # Clear window controls
+        self.remember_window_cb.set_active(False)
         self.window_x_entry.set_text("")
         self.window_y_entry.set_text("")
         self.window_width_entry.set_text("")
@@ -299,15 +310,13 @@ class PropertyPanel:
                 self.icon_preview.clear()
         else:
             self.icon_preview.clear()
-
-    # In property_panel.py, modify the _on_title_changed method:
+    
     def _on_title_changed(self, entry):
         """Handle title change"""
         if self.current_item_id and self.on_property_changed:
             new_title = entry.get_text()
-            # Notify immediately
             self.on_property_changed(self.current_item_id, 'title', new_title)
-
+    
     def _on_command_changed(self, entry):
         """Handle command change"""
         if self.current_item_id and self.on_property_changed:
@@ -329,9 +338,29 @@ class PropertyPanel:
             self.on_property_changed(self.current_item_id, 'icon', new_icon)
             self._update_icon_preview(new_icon)
     
+    def _on_window_remember_toggled(self, checkbox):
+        """Handle window position remembering toggle"""
+        enabled = checkbox.get_active()
+        
+        # Enable/disable window controls
+        self.window_x_entry.set_sensitive(enabled)
+        self.window_y_entry.set_sensitive(enabled)
+        self.window_width_entry.set_sensitive(enabled)
+        self.window_height_entry.set_sensitive(enabled)
+        self.window_state_combo.set_sensitive(enabled)
+        
+        if self.current_item_id and self.on_property_changed:
+            if not enabled:
+                # Clear window state when checkbox is unchecked
+                self.on_property_changed(self.current_item_id, 'window_state', None)
+    
     def _on_window_changed(self, widget):
-        """Handle window control changes (NEW)"""
+        """Handle window control changes"""
         if not self.current_item_id or not self.on_property_changed:
+            return
+        
+        # Only send updates if checkbox is checked
+        if not self.remember_window_cb.get_active():
             return
         
         try:
@@ -348,38 +377,40 @@ class PropertyPanel:
             pass  # Ignore invalid numbers
     
     def _on_script_dialog(self, button):
-        """Open script selection dialog (NEW)"""
+        """Open script selection AND editor"""
         if not self.db:
             return
         
-        # Create dialog
+        # First get list of scripts
+        scripts = self.db.get_all_scripts()
+        
+        # Create dialog with buttons for both actions
         dialog = Gtk.Dialog(
-            title="Select Script",
+            title="Scripts",
             parent=None,
             flags=0
         )
         dialog.add_buttons(
-            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            "Select", Gtk.ResponseType.OK
+            "Cancel", Gtk.ResponseType.CANCEL,
+            "Select", Gtk.ResponseType.OK,
+            "Edit/Create", 100  # Custom response
         )
         
-        dialog.set_default_size(400, 300)
+        dialog.set_default_size(500, 400)
         
-        # Create list store
+        # Create list of scripts
         list_store = Gtk.ListStore(str, str)  # name, id
-        scripts = self.db.get_all_scripts()
         for script in scripts:
             list_store.append([script['name'], str(script['id'])])
         
-        # Create tree view
-        tree_view = Gtk.TreeView(model=list_store)
+        # Add "New Script..." option
+        list_store.append(["➕ Create New Script...", "-1"])
         
-        # Add column
+        tree_view = Gtk.TreeView(model=list_store)
         renderer = Gtk.CellRendererText()
         column = Gtk.TreeViewColumn("Script Name", renderer, text=0)
         tree_view.append_column(column)
         
-        # Add to scrolled window
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.add(tree_view)
@@ -391,14 +422,36 @@ class PropertyPanel:
         response = dialog.run()
         
         if response == Gtk.ResponseType.OK:
+            # Select existing script
             selection = tree_view.get_selection()
             model, treeiter = selection.get_selected()
             if treeiter:
                 script_name = model[treeiter][0]
-                self.command_entry.set_text(f"@{script_name}")
-                self._on_command_changed(self.command_entry)
+                script_id = model[treeiter][1]
+                
+                if script_id == "-1":  # Create new
+                    # Launch script editor
+                    self._launch_script_editor()
+                else:
+                    self.command_entry.set_text(f"@{script_name}")
+                    self._on_command_changed(self.command_entry)
+        
+        elif response == 100:  # Edit/Create
+            # Launch script editor
+            self._launch_script_editor()
         
         dialog.destroy()
+    
+    def _launch_script_editor(self):
+        """Launch the script editor"""
+        try:
+            script_path = "gmen_script_editor.py"
+            if os.path.exists(script_path):
+                subprocess.Popen(["python3", script_path])
+            else:
+                print(f"⚠️ Script editor not found: {script_path}")
+        except Exception as e:
+            print(f"❌ Failed to launch script editor: {e}")
     
     def _on_pick_icon(self, button):
         """Open file chooser for icon selection"""
@@ -438,13 +491,11 @@ class PropertyPanel:
             self._on_icon_changed(self.icon_entry)
         
         dialog.destroy()
-
+    
     def _on_tile_clicked(self, button):
         """Tile window alongside the last positioned window"""
         if not self.current_item_id or not self.on_property_changed:
             return
-
-        # This would need access to the model to find last positioned window
-        # For now, just show a message - real implementation is in debug window
-        print("⎔ Tile feature available in Debug window")
-        # In practice, we'd need to pass model reference to property panel
+        
+        print("⎔ Tile feature - would implement window tiling logic")
+        # This would need access to window manager to calculate positions

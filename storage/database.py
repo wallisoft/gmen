@@ -469,6 +469,25 @@ class Database:
         
         return stats
     
+    def set_mouse_menu_mapping(self, left_menu_id: int = 1, middle_menu_id: int = 1, right_menu_id: int = 1):
+        """Set which menus are triggered by which mouse button"""
+        self.set_setting('mouse_left_menu', str(left_menu_id), 'Menu ID for left click')
+        self.set_setting('mouse_middle_menu', str(middle_menu_id), 'Menu ID for middle click')
+        self.set_setting('mouse_right_menu', str(right_menu_id), 'Menu ID for right click')
+        print(f"🖱️ Set mouse menu mapping: L={left_menu_id}, M={middle_menu_id}, R={right_menu_id}")
+
+    def get_mouse_menu_mapping(self) -> Dict[str, int]:
+        """Get mouse button to menu mapping"""
+        return {
+            'left': int(self.get_setting('mouse_left_menu', '1')),
+            'middle': int(self.get_setting('mouse_middle_menu', '1')),
+            'right': int(self.get_setting('mouse_right_menu', '1'))
+        }
+
+    def get_all_menus(self) -> List[Dict]:
+        """Get all menus for selection dropdown"""
+        return self.fetch_all("SELECT id, name, is_default FROM menus ORDER BY name")
+
     def close(self):
         """Close all connections"""
         if hasattr(self._local, 'conn') and self._local.conn:

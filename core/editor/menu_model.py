@@ -114,8 +114,8 @@ class MenuModel:
         self.is_modified = False
         print(f"📦 MenuModel loaded {len(self.items)} items with window states")
     
-    def add_item(self, title: str, parent_id: Optional[str] = None) -> MenuItem:
-        """Add new item to model (returns immediately)"""
+    def add_item(self, title: str, parent_id: Optional[str] = None, insert_after_id: Optional[str] = None) -> MenuItem:
+        """Add new item to model at specific position (BELOW insert_after_id)"""
         new_id = f"temp_{uuid.uuid4().hex[:8]}"
         
         # Calculate depth
@@ -124,34 +124,72 @@ class MenuModel:
             parent = self.items[parent_id]
             depth = parent.depth + 1
         
-        # Calculate sort order (append to end)
-        siblings = self._get_siblings(parent_id)
-        sort_order = len(siblings)
-        
-        # Create item
+        # Create item with temporary sort order
         item = MenuItem(
             id=new_id,
             title=title,
             depth=depth,
             parent_id=parent_id,
-            sort_order=sort_order,
+            sort_order=0,  # Will be calculated below
             is_new=True
         )
         
         # Add to model
         self.items[new_id] = item
         
-        # Update parent
+        # Insert at correct position
         if parent_id and parent_id in self.items:
             parent = self.items[parent_id]
-            parent.children.append(item)
-            parent.children.sort(key=lambda x: x.sort_order)
+            
+            if insert_after_id:
+                # Find position to insert AFTER specified sibling
+                insert_idx = -1
+                for i, child in enumerate(parent.children):
+                    if child.id == insert_after_id:
+                        insert_idx = i
+                        break
+                
+                if insert_idx >= 0:
+                    parent.children.insert(insert_idx + 1, item)
+                else:
+                    parent.children.append(item)
+            else:
+                # No position specified, add to end
+                parent.children.append(item)
+            
+            # Re-index all children
+            for i, child in enumerate(parent.children):
+                child.sort_order = i
+                
         else:
-            self.root_items.append(item)
-            self.root_items.sort(key=lambda x: x.sort_order)
+            # Root item
+            if insert_after_id:
+                # Find position to insert AFTER specified root item
+                insert_idx = -1
+                for i, root in enumerate(self.root_items):
+                    if root.id == insert_after_id:
+                        insert_idx = i
+                        break
+                
+                if insert_idx >= 0:
+                    self.root_items.insert(insert_idx + 1, item)
+                else:
+                    self.root_items.append(item)
+            else:
+                # No position specified, add to end
+                self.root_items.append(item)
+            
+            # Re-index all root items
+            for i, root in enumerate(self.root_items):
+                root.sort_order = i
+        
+        # Update item's final sort_order
+        item.sort_order = next((i for i, it in enumerate(
+            parent.children if parent_id else self.root_items
+        ) if it.id == new_id), 0)
         
         self.is_modified = True
-        print(f"➕ Added item {new_id} (parent: {parent_id})")
+        print(f"➕ Added item '{title}' at position {item.sort_order} (parent: {parent_id})")
         return item
     
     def update_item(self, item_id: str, **kwargs) -> bool:
@@ -189,8 +227,14 @@ class MenuModel:
         if item.parent_id and item.parent_id in self.items:
             parent = self.items[item.parent_id]
             parent.children = [c for c in parent.children if c.id != item_id]
+            # Re-index remaining children
+            for i, child in enumerate(parent.children):
+                child.sort_order = i
         elif item.parent_id is None:
             self.root_items = [i for i in self.root_items if i.id != item_id]
+            # Re-index remaining roots
+            for i, root in enumerate(self.root_items):
+                root.sort_order = i
         
         print(f"🗑️ Marked {item_id} for deletion")
         return True
@@ -226,7 +270,7 @@ class MenuModel:
                 sibling.is_modified = True
         
         self.is_modified = True
-        print(f"↕️ Moved {item_id} {direction}")
+        print(f"↕️ Moved {item_id} {direction} (pos {current_idx} → {new_idx})")
         return True
     
     def get_item(self, item_id: str) -> Optional[MenuItem]:

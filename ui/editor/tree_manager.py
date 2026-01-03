@@ -5,7 +5,7 @@ Tree manager - Works directly with MenuModel for immediate updates
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Set
 import time
 
 
@@ -20,8 +20,9 @@ class TreeManager:
         self.on_selection_changed = None
         self.on_item_modified = None
         
-        # Track expanded rows
+        # Track expanded rows and selection path
         self.expanded_rows = set()
+        self.selection_path = None  # Track selection as (action, target_id)
         
         # Tree store: title, item_id, has_children, is_new
         self.list_store = Gtk.TreeStore(str, str, bool, bool)
@@ -72,11 +73,11 @@ class TreeManager:
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         
         self.add_btn = Gtk.Button(label="⊕ Add")
-        self.add_btn.set_tooltip_text("Add item at same level")
+        self.add_btn.set_tooltip_text("Add item below selected item")
         self.add_btn.connect("clicked", self.on_add)
         
         self.submenu_btn = Gtk.Button(label="📁 Sub-Menu")
-        self.submenu_btn.set_tooltip_text("Add subitem")
+        self.submenu_btn.set_tooltip_text("Add subitem (will be selected)")
         self.submenu_btn.connect("clicked", self.on_submenu)
         
         self.remove_btn = Gtk.Button(label="⊖ Remove")
@@ -84,11 +85,11 @@ class TreeManager:
         self.remove_btn.connect("clicked", self.on_remove)
         
         self.up_btn = Gtk.Button(label="↑ Up")
-        self.up_btn.set_tooltip_text("Move item up")
+        self.up_btn.set_tooltip_text("Move item up (keeps parent expanded)")
         self.up_btn.connect("clicked", self.on_up)
         
         self.down_btn = Gtk.Button(label="↓ Down")
-        self.down_btn.set_tooltip_text("Move item down")
+        self.down_btn.set_tooltip_text("Move item down (keeps parent expanded)")
         self.down_btn.connect("clicked", self.on_down)
         
         hbox.pack_start(self.add_btn, True, True, 0)
@@ -100,7 +101,7 @@ class TreeManager:
         return hbox
     
     def rebuild_tree(self, preserve_expansion: bool = True):
-        """Rebuild entire tree from model while preserving expansion"""
+        """Rebuild entire tree from model while preserving expansion AND SELECTION"""
         current_time = time.time()
         if current_time - self.last_rebuild_time < 0.1:  # Debounce
             return
@@ -111,6 +112,46 @@ class TreeManager:
         # Save current selection and expansion
         selected_id = self._get_selected_item_id()
         saved_expanded = self.expanded_rows.copy()
+        
+        # Determine what to select after rebuild
+        item_to_select = None
+        
+        if self.selection_path:
+            # We have a specific selection path to restore
+            action, target_id = self.selection_path
+            print(f"   Selection path: {action} -> {target_id}")
+            
+            if action == 'add_child':
+                # Find the newly added child
+                parent_item = self.model.get_item(target_id)
+                if parent_item and parent_item.children:
+                    # Select the LAST child (newest)
+                    item_to_select = parent_item.children[-1].id
+                    print(f"   Will select new child: {item_to_select}")
+            
+            elif action == 'add_after':
+                # Find item added after target
+                target_item = self.model.get_item(target_id)
+                if target_item:
+                    # Find next sibling
+                    siblings = self._get_siblings(target_item.parent_id)
+                    for i, sibling in enumerate(siblings):
+                        if sibling.id == target_id and i + 1 < len(siblings):
+                            item_to_select = siblings[i + 1].id
+                            print(f"   Will select next sibling: {item_to_select}")
+                            break
+            
+            elif action == 'keep_selection':
+                # Keep selection on same item
+                item_to_select = target_id
+                print(f"   Will keep selection on: {target_id}")
+            
+            self.selection_path = None  # Clear after use
+        
+        # If no specific path, try to restore original selection
+        if not item_to_select and selected_id:
+            item_to_select = selected_id
+            print(f"   Will restore previous selection: {selected_id}")
         
         self.list_store.clear()
         
@@ -123,9 +164,15 @@ class TreeManager:
         if preserve_expansion:
             self._restore_expansion(saved_expanded)
         
-        # Restore selection if possible
-        if selected_id:
-            GLib.timeout_add(50, self._delayed_select_item, selected_id)
+        # Restore selection if possible - with delay
+        if item_to_select:
+            # Check if item still exists
+            item = self.model.get_item(item_to_select)
+            if item and not item.is_deleted:
+                GLib.timeout_add(150, self._delayed_select_item, item_to_select)
+                print(f"   Will select: {item_to_select} ('{item.title}')")
+            else:
+                print(f"⚠️  Item to select no longer exists: {item_to_select}")
         
         print(f"✅ Tree rebuilt with {len(self.model.get_all_items())} items")
     
@@ -150,45 +197,72 @@ class TreeManager:
             if tree_iter:
                 path = self.list_store.get_path(tree_iter)
                 self.treeview.expand_row(path, False)
+                print(f"   Re-expanded: {item_id}")
     
     def refresh_item(self, item_id: str, update_children: bool = False) -> bool:
-        """Update a single item in tree WITHOUT affecting expansion"""
-        print(f"🔍 refresh_item looking for {item_id}")
+        """Update a single item in tree - handles sub-items properly"""
+        print(f"🔍 refresh_item looking for '{item_id}'")
         
+        # Try to find the item by its current ID
         tree_iter = self._find_iter_by_id(item_id)
-        if not tree_iter:
-            print(f"❌ Could not find item {item_id} in tree")
-            return False
         
+        if not tree_iter:
+            # Item might have been saved and got a DB ID
+            # Search through ALL items in model for match
+            matching_item = None
+            for model_item in self.model.items.values():
+                # Check if this is the item we're looking for
+                if (model_item.id == item_id or 
+                    (model_item.db_id and str(model_item.db_id) == item_id)):
+                    matching_item = model_item
+                    break
+            
+            if matching_item:
+                # Found it! Try to find by its CURRENT ID
+                tree_iter = self._find_iter_by_id(matching_item.id)
+                if not tree_iter:
+                    print(f"❌ Item found in model but not in tree: {matching_item.id}")
+                    return False
+                # Update item_id to the current ID
+                item_id = matching_item.id
+            else:
+                print(f"❌ Item {item_id} not found in model or tree")
+                return False
+        
+        # Get item from model
         item = self.model.get_item(item_id)
         if not item or item.is_deleted:
             # Item was deleted, remove from tree
             self.list_store.remove(tree_iter)
-            print(f"✅ Removed deleted item {item_id} from tree")
+            print(f"✅ Removed deleted item from tree")
             return True
         
-        # Check if this row is currently expanded
-        path = self.list_store.get_path(tree_iter)
-        was_expanded = self.treeview.row_expanded(path)
-        
-        # Update values
+        # Update ALL values
         old_title = self.list_store.get_value(tree_iter, 0)
-        self.list_store.set_value(tree_iter, 0, item.title)
-        self.list_store.set_value(tree_iter, 2, len(item.children) > 0)
-        self.list_store.set_value(tree_iter, 3, item.is_new)
+        new_title = item.title
         
-        # If updating children is needed AND item was expanded
-        if update_children and was_expanded:
-            self._rebuild_subtree(tree_iter, item)
-            # Re-expand after rebuild
-            self.treeview.expand_row(path, False)
+        # Only update if changed
+        if old_title != new_title or self.list_store.get_value(tree_iter, 3) != item.is_new:
+            self.list_store.set(tree_iter, 
+                               (0, 1, 2, 3),
+                               (new_title, item.id, len(item.children) > 0, item.is_new))
+            
+            # Force immediate redraw of this row
+            path = self.list_store.get_path(tree_iter)
+            self.treeview.queue_draw_area(path, 0, -1, -1)
+            
+            print(f"✅ Updated item '{old_title}' → '{new_title}'")
         
-        # Force redraw only this row
-        rect = self.treeview.get_cell_area(path, self.treeview.get_column(0))
-        if rect:
-            self.treeview.queue_draw_area(rect.x, rect.y, rect.width, rect.height)
+        # If this is a parent and needs children updated
+        if update_children and len(item.children) > 0:
+            # Check if this row is currently expanded
+            path = self.list_store.get_path(tree_iter)
+            if self.treeview.row_expanded(path):
+                # Rebuild the subtree
+                self._rebuild_subtree(tree_iter, item)
+                # Re-expand
+                self.treeview.expand_row(path, False)
         
-        print(f"✅ Refreshed item {item_id}: '{old_title}' → '{item.title}'")
         return True
     
     def _rebuild_subtree(self, parent_iter, parent_item):
@@ -212,13 +286,13 @@ class TreeManager:
         # First, update the tree view IMMEDIATELY
         tree_iter = self._find_iter_by_id(item_id)
         if tree_iter:
-            self.list_store.set_value(tree_iter, 0, new_title)
-            # Force immediate redraw
-            path = self.list_store.get_path(tree_iter)
-            rect = self.treeview.get_cell_area(path, self.treeview.get_column(0))
-            if rect:
-                self.treeview.queue_draw_area(rect.x, rect.y, rect.width, rect.height)
-            print(f"✅ Tree updated immediately for {item_id}")
+            old_title = self.list_store.get_value(tree_iter, 0)
+            if old_title != new_title:
+                self.list_store.set_value(tree_iter, 0, new_title)
+                # Force immediate redraw
+                path = self.list_store.get_path(tree_iter)
+                self.treeview.queue_draw_area(path, 0, -1, -1)
+                print(f"✅ Tree updated immediately: '{old_title}' → '{new_title}'")
         
         # Then update model
         if self.model.update_item(item_id, title=new_title):
@@ -254,54 +328,52 @@ class TreeManager:
             self.on_selection_changed(item_id)
     
     def on_add(self, button):
-        """Add new item at current level"""
+        """Add new item BELOW selected item - NEW ITEM IS SELECTED"""
         selected_id = self._get_selected_item_id()
+        
         parent_id = None
+        insert_after_id = None
         
         if selected_id:
-            item = self.model.get_item(selected_id)
-            if item:
-                parent_id = item.parent_id
+            selected_item = self.model.get_item(selected_id)
+            if selected_item:
+                # Insert at SAME LEVEL as selected item
+                parent_id = selected_item.parent_id
+                insert_after_id = selected_id  # Insert AFTER selected item
+                # Track that we're adding after this item
+                self.selection_path = ('add_after', selected_id)
         
-        # Save expanded state before adding
-        save_expanded = self.expanded_rows.copy()
+        print(f"➕ Adding item at level {parent_id}, after {insert_after_id}")
         
-        # Add to model
-        new_item = self.model.add_item("New Item", parent_id)
+        # Add to model with position context
+        new_item = self.model.add_item("New Item", parent_id, insert_after_id)
+        print(f"   Created item: {new_item.id} ('{new_item.title}')")
         
-        # Rebuild tree but preserve expansion
+        # Rebuild preserving expansion - selection will be restored by rebuild_tree
         self.rebuild_tree(preserve_expansion=True)
-        
-        # Select the new item
-        self._select_item(new_item.id, scroll=True)
         
         # Notify editor
         if self.on_item_modified:
             self.on_item_modified(new_item.id, 'title', 'New Item')
     
     def on_submenu(self, button):
-        """Add subitem under selected item"""
+        """Add subitem under selected item - NEW ITEM IS SELECTED AND PARENT EXPANDED"""
         selected_id = self._get_selected_item_id()
         if not selected_id:
             return
         
+        # Save selection path BEFORE adding
+        self.selection_path = ('add_child', selected_id)
+        
         # Save that we want this parent expanded
         self.expanded_rows.add(selected_id)
         
-        # Add to model
+        # Add subitem (will be selected after)
         new_item = self.model.add_item("Sub-Menu", selected_id)
+        print(f"📁 Created sub-item '{new_item.title}' under '{selected_id}'")
         
-        # Rebuild tree preserving expansion
+        # Rebuild preserving expansion - this will trigger selection restoration
         self.rebuild_tree(preserve_expansion=True)
-        
-        # Ensure parent is expanded
-        parent_iter = self._find_iter_by_id(selected_id)
-        if parent_iter:
-            path = self.list_store.get_path(parent_iter)
-            self.treeview.expand_row(path, False)
-        
-        # Select new item and scroll to it
-        self._select_item(new_item.id, scroll=True)
         
         # Notify editor
         if self.on_item_modified:
@@ -319,12 +391,12 @@ class TreeManager:
         
         # Delete from model
         if self.model.delete_item(selected_id):
+            # Clear selection path
+            self.selection_path = None
+            
             # Rebuild the parent subtree if exists
             if parent_id:
-                parent_iter = self._find_iter_by_id(parent_id)
-                if parent_iter:
-                    parent_item = self.model.get_item(parent_id)
-                    self._rebuild_subtree(parent_iter, parent_item)
+                self._refresh_parent_subtree(parent_id)
             else:
                 # Rebuild root
                 self.rebuild_tree(preserve_expansion=True)
@@ -337,65 +409,65 @@ class TreeManager:
                 self.on_item_modified(selected_id, 'deleted', True)
     
     def on_up(self, button):
-        """Move item up without full rebuild"""
+        """Move item up - KEEPS SELECTION ON MOVED ITEM"""
         selected_id = self._get_selected_item_id()
         if not selected_id:
             return
         
-        # Get item and its parent before moving
+        # Track that we want to keep selection on this item
+        self.selection_path = ('keep_selection', selected_id)
+        
+        # Get item and parent
         item = self.model.get_item(selected_id)
         if not item:
             return
         
-        parent_id = item.parent_id
-        save_expanded = self.expanded_rows.copy()  # Save current expansion
+        # Save expansion state
+        save_expanded = self.expanded_rows.copy()
         
+        # Move in model
         if self.model.move_item(selected_id, 'up'):
-            if parent_id:
-                # Just rebuild the parent's subtree
-                self._rebuild_parent_subtree(parent_id, save_expanded)
+            # Rebuild affected subtree
+            if item.parent_id:
+                self._refresh_parent_subtree(item.parent_id, save_expanded)
             else:
-                # For root items, just rebuild the tree but preserve expansion
                 self.rebuild_tree(preserve_expansion=True)
-            
-            # Keep selection and ensure visible
-            GLib.idle_add(self._delayed_select_and_scroll, selected_id)
         
         # Notify editor
         if self.on_item_modified:
             self.on_item_modified(selected_id, 'moved', 'up')
     
     def on_down(self, button):
-        """Move item down without full rebuild"""
+        """Move item down - KEEPS SELECTION ON MOVED ITEM"""
         selected_id = self._get_selected_item_id()
         if not selected_id:
             return
         
-        # Get item and its parent before moving
+        # Track that we want to keep selection on this item
+        self.selection_path = ('keep_selection', selected_id)
+        
+        # Get item and parent
         item = self.model.get_item(selected_id)
         if not item:
             return
         
-        parent_id = item.parent_id
-        save_expanded = self.expanded_rows.copy()  # Save current expansion
+        # Save expansion state
+        save_expanded = self.expanded_rows.copy()
         
+        # Move in model
         if self.model.move_item(selected_id, 'down'):
-            if parent_id:
-                # Just rebuild the parent's subtree
-                self._rebuild_parent_subtree(parent_id, save_expanded)
+            # Rebuild affected subtree
+            if item.parent_id:
+                self._refresh_parent_subtree(item.parent_id, save_expanded)
             else:
-                # For root items, just rebuild the tree but preserve expansion
                 self.rebuild_tree(preserve_expansion=True)
-            
-            # Keep selection and ensure visible
-            GLib.idle_add(self._delayed_select_and_scroll, selected_id)
         
         # Notify editor
         if self.on_item_modified:
             self.on_item_modified(selected_id, 'moved', 'down')
     
-    def _rebuild_parent_subtree(self, parent_id: str, save_expanded: set):
-        """Rebuild only a parent's subtree, preserving expansion"""
+    def _refresh_parent_subtree(self, parent_id: str, save_expanded: set = None):
+        """Refresh just a parent's subtree - PRESERVES CHILD SELECTION"""
         parent_iter = self._find_iter_by_id(parent_id)
         if not parent_iter:
             return
@@ -404,27 +476,35 @@ class TreeManager:
         if not parent_item:
             return
         
-        # Remove all children
-        child = self.list_store.iter_children(parent_iter)
-        while child:
-            next_child = self.list_store.iter_next(child)
-            self.list_store.remove(child)
-            child = next_child
+        # Get current selection before refresh
+        selected_id = self._get_selected_item_id()
         
-        # Add updated children (sorted)
-        for child_item in sorted(parent_item.children, key=lambda x: x.sort_order):
-            if not child_item.is_deleted:
-                self._add_item_to_tree(parent_iter, child_item)
+        # Check if parent is currently expanded
+        path = self.list_store.get_path(parent_iter)
+        was_expanded = self.treeview.row_expanded(path)
         
-        # Restore expansion for this parent's children
-        for item_id in save_expanded:
-            # Only restore if it's a child of this parent
-            item = self.model.get_item(item_id)
+        # Rebuild subtree
+        self._rebuild_subtree(parent_iter, parent_item)
+        
+        # Re-expand if it was expanded
+        if was_expanded:
+            self.treeview.expand_row(path, False)
+            
+            # Also restore child expansions
+            if save_expanded:
+                for item_id in save_expanded:
+                    if item_id != parent_id:  # Don't re-expand parent
+                        child_iter = self._find_iter_by_id(item_id)
+                        if child_iter:
+                            child_path = self.list_store.get_path(child_iter)
+                            self.treeview.expand_row(child_path, False)
+        
+        # Restore selection if it was a child of this parent
+        if selected_id:
+            item = self.model.get_item(selected_id)
             if item and item.parent_id == parent_id:
-                tree_iter = self._find_iter_by_id(item_id)
-                if tree_iter:
-                    path = self.list_store.get_path(tree_iter)
-                    self.treeview.expand_row(path, False)
+                # This was a child of the parent we just refreshed
+                GLib.idle_add(self._delayed_select_item, selected_id)
     
     # ===== Helper Methods =====
     
@@ -475,3 +555,31 @@ class TreeManager:
         """Select and scroll to item after a delay"""
         self._select_item(item_id, scroll=True)
         return False  # Don't repeat
+    
+    def _get_siblings(self, parent_id: Optional[str] = None) -> List:
+        """Get all items at same level"""
+        if parent_id:
+            parent = self.model.get_item(parent_id)
+            return parent.children if parent else []
+        return self.model.root_items
+    
+    def _get_item_hierarchy(self, item_id: str) -> Tuple[str, int]:
+        """Get item's hierarchy info: (parent_id, position_in_parent)"""
+        item = self.model.get_item(item_id)
+        if not item:
+            return (None, -1)
+        
+        if item.parent_id:
+            parent = self.model.get_item(item.parent_id)
+            if parent:
+                # Find position in parent's children
+                for i, child in enumerate(parent.children):
+                    if child.id == item_id:
+                        return (item.parent_id, i)
+        
+        # Root item
+        for i, root in enumerate(self.model.root_items):
+            if root.id == item_id:
+                return (None, i)
+        
+        return (None, -1)
