@@ -308,7 +308,8 @@ class Database:
             if parent:
                 depth = parent.get('depth', 0) + 1
         
-        self.execute("""
+        conn = self._get_connection()
+        cursor = conn.execute("""
             INSERT INTO menu_items 
             (menu_id, title, command, script_id, icon, category, 
              depth, parent_id, sort_order, is_active)
@@ -316,7 +317,8 @@ class Database:
         """, (menu_id, title, command, script_id, icon, category,
               depth, parent_id, sort_order))
         
-        return self._get_connection().lastrowid
+        conn.commit()
+        return cursor.lastrowid  # Get from the cursor
     
     def update_menu_item(self, item_id: int, **kwargs):
         """Update a menu item"""

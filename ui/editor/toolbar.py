@@ -100,9 +100,9 @@ class Toolbar:
         # Separator
         toolbar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 5)
         
-        # Debug button
-        self.debug_btn = Gtk.Button.new_with_label("🐛 Debug")
-        self.debug_btn.set_tooltip_text("Show debug information")
+        # Workspaces button 
+        self.debug_btn = Gtk.Button.new_with_label("🗺️ Workspaces")
+        self.debug_btn.set_tooltip_text("Window positioning and workspaces")
         self.debug_btn.connect("clicked", self._on_debug_clicked)
         toolbar.pack_start(self.debug_btn, False, False, 0)
         

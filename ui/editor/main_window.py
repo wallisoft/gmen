@@ -1,7 +1,3 @@
-"""
-Main editor window - Clean integration with SIMPLE ListManager
-"""
-
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
@@ -9,43 +5,34 @@ from gi.repository import Gtk, GLib
 from ui.editor.list_manager import ListManager
 from ui.editor.property_panel import PropertyPanel
 from ui.editor.toolbar import Toolbar
-from core.editor.menu_model import MenuItem  # For temporary items
+from core.editor.menu_model import MenuItem
 
 
 class EditorMainWindow:
-    """Main editor window with clean architecture"""
-    
     def __init__(self, db, menu_model, save_handler, change_tracker):
         self.db = db
         self.model = menu_model
         self.save_handler = save_handler
         self.change_tracker = change_tracker
         
-        # Current selection
         self.selected_item_id = None
         
-        # UI components
         self.window = None
         self.list_manager = None
         self.property_panel = None
         self.toolbar = None
         
-        # Initialize UI
         self._init_ui()
     
     def _init_ui(self):
-        """Initialize the UI"""
-        # Create main window
         self.window = Gtk.Window()
         self.window.set_title(f"GMen Editor - {self.model.name}")
         self.window.set_default_size(1200, 800)
         self.window.connect("destroy", self.on_window_destroy)
         
-        # Create main container
         main_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.window.add(main_vbox)
         
-        # Create toolbar
         self.toolbar = Toolbar(self.db)
         self.toolbar.on_save = self.on_save
         self.toolbar.on_reload = self.on_reload
@@ -54,7 +41,6 @@ class EditorMainWindow:
         self.toolbar.on_import = self.on_import
         main_vbox.pack_start(self.toolbar.create_toolbar(), False, False, 0)
         
-        # Create content area
         content_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         content_hbox.set_margin_top(5)
         content_hbox.set_margin_bottom(5)
@@ -62,58 +48,37 @@ class EditorMainWindow:
         content_hbox.set_margin_end(5)
         main_vbox.pack_start(content_hbox, True, True, 0)
         
-        # Create SIMPLE list manager
         self.list_manager = ListManager(self.db, self.model)
         self.list_manager.on_selection_changed = self.on_list_selection_changed
         self.list_manager.on_item_modified = self.on_item_modified
         
-        # Create property panel
         self.property_panel = PropertyPanel(self.db)
         self.property_panel.on_property_changed = self.on_property_changed
         
-        # Add list panel (left)
         list_frame = self.list_manager.create_nav_panel()
         content_hbox.pack_start(list_frame, True, True, 0)
         
-        # Add property panel (right)
         property_frame = self.property_panel.create_panel()
         content_hbox.pack_start(property_frame, False, False, 0)
         
-        # Show window
         self.window.show_all()
-
-        # Load CSS
         self._load_css()
         
-        print("✅ Editor UI initialized with SIMPLE ListManager")
+        print("✅ Editor UI initialized")
     
     def run(self):
-        """Run the main GTK loop"""
         Gtk.main()
     
-    # ===== Event Handlers =====
-    
     def on_window_destroy(self, window):
-        """Handle window close"""
         print("🪟 Window closing...")
-        
-        # Check for unsaved changes
-        if self.model.has_changes():
-            print("⚠️ There are unsaved changes!")
-            # TODO: Add confirmation dialog
-        
         Gtk.main_quit()
     
     def on_list_selection_changed(self, item_id):
-        """Handle list selection change"""
-        print(f"📌 List selection changed: {item_id}")
         self.selected_item_id = item_id
         
         if item_id:
-            # Get properties from list manager
             props = self.list_manager.get_item_properties(item_id)
             if props:
-                # Create a temporary model item for the property panel
                 temp_item = MenuItem(
                     id=item_id,
                     title=props.get('title', ''),
@@ -121,193 +86,243 @@ class EditorMainWindow:
                     icon=props.get('icon', ''),
                     window_state=props.get('window_state')
                 )
-                # Try to get DB ID if available
+                
                 selected_item = self.list_manager.get_selected_item()
-                if selected_item and selected_item.db_id:
-                    temp_item.db_id = selected_item.db_id
+                if selected_item and 'db_id' in selected_item:
+                    temp_item.db_id = selected_item['db_id']
                 
                 self.property_panel.load_item(temp_item)
-                print(f"📋 Loaded properties for item {item_id}")
             else:
                 self.property_panel.clear()
-                print(f"⚠️ No properties found for item {item_id}")
         else:
             self.property_panel.clear()
-            print("📋 Selection cleared")
     
     def on_item_modified(self, item_id, field, value):
-        """Handle item modification from list manager"""
-        print(f"📝 List modified: {item_id}.{field} = {value}")
-        
-        # Update change tracker
-        self.change_tracker.mark_item_modified(item_id, field, value)
-        
-        # Mark model as modified
+        print(f"📝 List: {item_id}.{field} = {value}")
         self.model.is_modified = True
-        
-        # Update toolbar status
         self.toolbar.set_unsaved_changes(True)
     
     def on_property_changed(self, item_id, field, value):
-        """Handle property change from property panel"""
-        print(f"⚙️ Property changed: {item_id}.{field} = {value}")
+        print(f"⚙️ Property: {item_id}.{field} = {value}")
         
         if field == 'title':
-            # Update in list manager
-            if self.list_manager.update_item_title(item_id, value):
-                print(f"✅ Updated title in list")
+            self.list_manager.update_item_title(item_id, value)
         else:
-            # Update in list manager's properties
             update_data = {field: value}
             self.list_manager.update_item_properties(item_id, **update_data)
-            
-            # If icon changed, refresh might be needed
-            if field == 'icon':
-                pass  # Icon updates are handled by property panel
         
-        # Update change tracker
-        self.change_tracker.mark_item_modified(item_id, field, value)
-        
-        # Mark model as modified
         self.model.is_modified = True
-        
-        # Update toolbar
         self.toolbar.set_unsaved_changes(True)
     
     def on_save(self):
-        """Handle save button click"""
         print("💾 Save requested...")
         
-        # First convert display list back to model
-        print("🔄 Converting display list to model...")
-        success = self.list_manager.save_to_model(self.model)
+        # Get flat items from list manager
+        flat_items = self.list_manager.items
         
-        if not success:
-            self.toolbar.show_message("Save failed: could not convert to model")
-            return
-        
-        if not self.model.has_changes():
-            self.toolbar.show_message("No changes to save")
-            return
-        
-        summary = self.change_tracker.get_change_summary()
-        print(f"📊 Changes to save: {summary}")
-        
-        if summary['total'] == 0:
-            self.toolbar.show_message("No changes to save")
-            return
-        
-        self.toolbar.show_message("Saving...")
-        
-        # Save to database
-        success, message = self.save_handler.save_model(self.model)
-        
-        if success:
-            self.toolbar.show_message(f"Saved {summary['total']} changes")
-            self.toolbar.set_unsaved_changes(False)
+        try:
+            menu = self.db.get_default_menu()
+            if not menu:
+                self.toolbar.show_message("No menu found")
+                return
             
-            # Clear change tracker
-            self.change_tracker.clear()
+            menu_id = menu['id']
             
-            # Refresh list to update DB IDs
-            self.list_manager.rebuild_list()
+            # Save to database
+            success = self._save_to_database(menu_id, flat_items)
             
-            # Re-select current item if any
-            if self.selected_item_id:
-                # Selection will be restored by rebuild_list
-                pass
+            if success:
+                self.toolbar.show_message(f"Saved {len(flat_items)} items")
+                self.toolbar.set_unsaved_changes(False)
+                self.model.is_modified = False
                 
-        else:
-            self.toolbar.show_message(f"Save failed: {message}")
+                # Refresh to get any new db_ids
+                self.list_manager.rebuild_list()
+                
+                # Try to restore selection
+                if self.selected_item_id:
+                    GLib.idle_add(lambda: self.list_manager.listbox.select_row(
+                        self._find_row_by_id(self.selected_item_id)
+                    ))
+                
+                print("✅ Save successful!")
+            else:
+                self.toolbar.show_message("Save failed")
+                
+        except Exception as e:
+            print(f"❌ Save failed: {e}")
+            import traceback
+            traceback.print_exc()
+            self.toolbar.show_message(f"Save failed: {e}")
+
+    def _save_to_database(self, menu_id, flat_items):
+        """Save flat items to database, preserving existing IDs"""
+        print(f"📊 Saving {len(flat_items)} items to menu {menu_id}")
+
+        with self.db.transaction():
+            # Convert flat → tree
+            tree = self._flat_to_tree(flat_items)
+            print(f"📊 Converted to tree with {len(tree)} root nodes")
+
+            # Track which db_ids we're keeping
+            kept_ids = set()
+            sort_counter = [0]
+
+            def save_nodes(nodes, parent_db_id):
+                for node in nodes:
+                    sort_counter[0] += 10
+
+                    print(f"📋 Processing: '{node['title']}' (db_id: {node.get('db_id')}, parent: {parent_db_id})")
+
+                    if node.get('db_id'):
+                        # UPDATE existing
+                        print(f"  Updating item {node['db_id']}...")
+                        rows_affected = self.db.update_menu_item(
+                            node['db_id'],
+                            title=node['title'],
+                            command=node['command'],
+                            icon=node['icon'],
+                            parent_id=parent_db_id,
+                            sort_order=sort_counter[0],
+                            is_active=True
+                        )
+                        print(f"  Update affected {rows_affected} rows")
+                        kept_ids.add(node['db_id'])
+                    else:
+                        # INSERT new
+                        print(f"  Inserting new item...")
+                        new_db_id = self.db.add_menu_item(
+                            menu_id=menu_id,
+                            title=node['title'],
+                            command=node['command'],
+                            icon=node['icon'],
+                            parent_id=parent_db_id,
+                            sort_order=sort_counter[0]
+                        )
+                        node['db_id'] = new_db_id
+                        kept_ids.add(new_db_id)
+                        print(f"  New item ID: {new_db_id}")
+
+                    # Save children
+                    if node['children']:
+                        save_nodes(node['children'], node.get('db_id'))
+
+            save_nodes(tree, None)
+
+            print(f"📊 Kept {len(kept_ids)} item IDs")
+
+            # Check what's in the database
+            all_items = self.db.get_menu_items(menu_id, active_only=False)
+            print(f"📊 Database has {len(all_items)} total items")
+
+            # Soft delete items not in our list
+            deleted_count = 0
+            for item in all_items:
+                if item['id'] not in kept_ids and item['is_active']:
+                    print(f"🗑️ Soft deleting item {item['id']}: {item['title']}")
+                    rows = self.db.execute(
+                        "UPDATE menu_items SET is_active = 0 WHERE id = ?",
+                        (item['id'],)
+                    )
+                    print(f"  Delete affected {rows} rows")
+                    deleted_count += 1
+
+            if deleted_count > 0:
+                print(f"🗑️ Soft deleted {deleted_count} old items")
+
+            return True
+
+
+    def _find_row_by_id(self, item_id):
+        """Find a row by item_id"""
+        for row in self.list_manager.listbox.get_children():
+            if hasattr(row, 'item_id') and row.item_id == item_id:
+                return row
+        return None
+    
+    def _flat_to_tree(self, flat_items):
+        """Convert flat list to tree structure"""
+        tree = []
+        stack = []  # (depth, node)
+        
+        for flat_item in flat_items:
+            node = {
+                'db_id': flat_item.get('db_id'),
+                'title': flat_item['title'],
+                'command': flat_item.get('command', ''),
+                'icon': flat_item.get('icon', ''),
+                'depth': flat_item['depth'],
+                'children': []
+            }
+            
+            # Find parent
+            while stack and stack[-1][0] >= node['depth']:
+                stack.pop()
+            
+            if stack:
+                stack[-1][1]['children'].append(node)
+            else:
+                tree.append(node)
+            
+            stack.append((node['depth'], node))
+        
+        return tree
+    
+    def _insert_tree(self, menu_id, tree_nodes, parent_id, sort_counter=[0]):
+        """Insert tree into database"""
+        for node in tree_nodes:
+            sort_counter[0] += 10
+            
+            # Always insert new (we soft-deleted all old ones)
+            db_id = self.db.add_menu_item(
+                menu_id=menu_id,
+                title=node['title'],
+                command=node['command'],
+                icon=node['icon'],
+                parent_id=parent_id,
+                sort_order=sort_counter[0]
+            )
+            
+            # Update the flat item with new db_id if it matches
+            # (This is tricky without temp_id mapping...)
+            
+            if node['children']:
+                self._insert_tree(menu_id, node['children'], db_id, sort_counter)
     
     def on_reload(self):
-        """Handle reload button click"""
         print("🔄 Reload requested...")
-        
-        if self.model.has_changes():
-            print("⚠️ Unsaved changes will be lost!")
-            # TODO: Add confirmation dialog
-        
-        # Reload from database
         self.model.load_from_db(self.db)
-        
-        # Rebuild list from fresh model
         self.list_manager.rebuild_list()
-        
-        # Clear property panel
         self.property_panel.clear()
-        
-        # Clear selection
         self.selected_item_id = None
-        
-        # Clear change tracker
-        self.change_tracker.clear()
-        
-        # Update toolbar
         self.toolbar.set_unsaved_changes(False)
         self.toolbar.show_message("Reloaded from database")
     
     def on_debug(self):
-        """Handle debug button click"""
         print("\n=== DEBUG ===")
-        print("Model:")
-        self.model.print_debug()
-        
-        print("\nDisplay items:")
-        selected = self.list_manager.get_selected_item()
-        if selected:
-            print(f"Selected: {selected}")
-        else:
-            print("No selection")
-        
-        print(f"Display items count: {len(self.list_manager.display_items)}")
-        for i, item in enumerate(self.list_manager.display_items):
-            print(f"  [{i}] {item}")
-        
+        print(f"Model has changes: {self.model.is_modified}")
+        print(f"Selected item: {self.selected_item_id}")
+        print(f"List items: {len(self.list_manager.items)}")
+        for i, item in enumerate(self.list_manager.items):
+            print(f"  [{i}] depth={item['depth']}: {item['title']} (db_id: {item.get('db_id')})")
         print("=============")
-        self.toolbar.show_message("Debug info printed to console")
+        self.toolbar.show_message("Debug info printed")
     
     def on_export(self):
-        """Handle export button click"""
         print("📤 Export requested")
         self.toolbar.show_message("Export (stub)")
-        # TODO: Implement export
     
     def on_import(self):
-        """Handle import button click"""
         print("📥 Import requested")
         self.toolbar.show_message("Import (stub)")
-        # TODO: Implement import
-
+    
     def _load_css(self):
-        """Load CSS styles"""
         css = """
-        .suggested-action {
-            background-color: #26a269;
-            color: white;
-        }
-        .destructive-action {
-            background-color: #c01c28;
-            color: white;
-        }
-        .dim-label {
-            opacity: 0.7;
-        }
-        .list-row {
-            padding: 3px;
-        }
         .list-row:selected {
             background-color: #3584e4;
             color: white;
         }
-        .indent-button {
-            font-weight: bold;
-        }
-        .outdent-button {
-            font-weight: bold;
-        }
         """
-        
         try:
             provider = Gtk.CssProvider()
             provider.load_from_data(css.encode())
@@ -318,4 +333,4 @@ class EditorMainWindow:
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
         except:
-            pass  # CSS not critical
+            pass

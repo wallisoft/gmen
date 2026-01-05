@@ -1,5 +1,6 @@
 """
 Property panel with script dialog and window controls
+Cleaned up - no exit button
 """
 
 import gi
@@ -17,6 +18,9 @@ class PropertyPanel:
         self.db = db
         self.on_property_changed = None
         self.current_item_id = None
+        
+        # Flag to prevent event loops
+        self._is_loading = False
         
         # UI widgets
         self.title_entry = None
@@ -216,6 +220,9 @@ class PropertyPanel:
     
     def load_item(self, item):
         """Load item properties including window state"""
+        # Set loading flag to prevent event loops
+        self._is_loading = True
+        
         self.current_item_id = item.id
         
         # Update fields
@@ -260,16 +267,22 @@ class PropertyPanel:
         # Determine type
         item_type = "Folder"
         if item.command:
-            if item.is_script():
+            if hasattr(item, 'is_script') and item.is_script():
                 item_type = "Script"
             else:
                 item_type = "Command"
         self.type_label.set_text(item_type)
         
-        print(f"📋 PropertyPanel loaded item {item.id}")
+        # Clear loading flag
+        self._is_loading = False
+        
+        # Only print if we have a real change (not initial load)
+        if not getattr(item, '_is_initial_load', False):
+            print(f"📋 PropertyPanel loaded item {item.id}")
     
     def clear(self):
         """Clear the panel"""
+        self._is_loading = True
         self.current_item_id = None
         self.title_entry.set_text("")
         self.command_entry.set_text("")
@@ -287,6 +300,7 @@ class PropertyPanel:
         self.id_label.set_text("ID: --")
         self.depth_label.set_text("Depth: --")
         self.type_label.set_text("Type: --")
+        self._is_loading = False
     
     def _update_icon_preview(self, icon_text):
         """Update icon preview image"""
@@ -313,13 +327,13 @@ class PropertyPanel:
     
     def _on_title_changed(self, entry):
         """Handle title change"""
-        if self.current_item_id and self.on_property_changed:
+        if not self._is_loading and self.current_item_id and self.on_property_changed:
             new_title = entry.get_text()
             self.on_property_changed(self.current_item_id, 'title', new_title)
     
     def _on_command_changed(self, entry):
         """Handle command change"""
-        if self.current_item_id and self.on_property_changed:
+        if not self._is_loading and self.current_item_id and self.on_property_changed:
             new_command = entry.get_text()
             self.on_property_changed(self.current_item_id, 'command', new_command)
             
@@ -333,7 +347,7 @@ class PropertyPanel:
     
     def _on_icon_changed(self, entry):
         """Handle icon change"""
-        if self.current_item_id and self.on_property_changed:
+        if not self._is_loading and self.current_item_id and self.on_property_changed:
             new_icon = entry.get_text()
             self.on_property_changed(self.current_item_id, 'icon', new_icon)
             self._update_icon_preview(new_icon)
@@ -349,14 +363,14 @@ class PropertyPanel:
         self.window_height_entry.set_sensitive(enabled)
         self.window_state_combo.set_sensitive(enabled)
         
-        if self.current_item_id and self.on_property_changed:
+        if not self._is_loading and self.current_item_id and self.on_property_changed:
             if not enabled:
                 # Clear window state when checkbox is unchecked
                 self.on_property_changed(self.current_item_id, 'window_state', None)
     
     def _on_window_changed(self, widget):
         """Handle window control changes"""
-        if not self.current_item_id or not self.on_property_changed:
+        if self._is_loading or not self.current_item_id or not self.on_property_changed:
             return
         
         # Only send updates if checkbox is checked
