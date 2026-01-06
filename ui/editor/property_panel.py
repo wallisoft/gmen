@@ -302,6 +302,44 @@ class PropertyPanel:
         self.type_label.set_text("Type: --")
         self._is_loading = False
     
+    def create_panel_contents(self):
+        """Create just the contents (for external framing)"""
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vbox.set_margin_top(12)
+        vbox.set_margin_bottom(12)
+        vbox.set_margin_start(12)
+        vbox.set_margin_end(12)
+        
+        vbox.pack_start(self._create_label("Title"), False, False, 0)
+        vbox.pack_start(self.title_entry, False, False, 0)
+        vbox.pack_start(self._create_label("Command"), False, False, 5)
+        vbox.pack_start(self.command_container, False, False, 0)
+        vbox.pack_start(self._create_label("Icon"), False, False, 5)
+        vbox.pack_start(self.icon_container, False, False, 0)
+        vbox.pack_start(self._create_label("Window Position"), False, False, 10)
+        vbox.pack_start(self.remember_window_cb, False, False, 5)
+        vbox.pack_start(self.window_container, False, False, 0)
+        
+        tile_btn = Gtk.Button.new_with_label("⎔ Tile Alongside")
+        tile_btn.connect("clicked", self._on_tile_clicked)
+        vbox.pack_start(tile_btn, False, False, 5)
+        
+        vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 10)
+        
+        grid = Gtk.Grid()
+        grid.set_column_spacing(10)
+        grid.set_row_spacing(6)
+        grid.attach(self._create_info_label("ID:"), 0, 0, 1, 1)
+        grid.attach(self.id_label, 1, 0, 1, 1)
+        grid.attach(self._create_info_label("Depth:"), 0, 1, 1, 1)
+        grid.attach(self.depth_label, 1, 1, 1, 1)
+        grid.attach(self._create_info_label("Type:"), 0, 2, 1, 1)
+        grid.attach(self.type_label, 1, 2, 1, 1)
+        vbox.pack_start(grid, False, False, 0)
+        vbox.pack_start(Gtk.Box(), True, True, 0)
+    
+        return vbox
+
     def _update_icon_preview(self, icon_text):
         """Update icon preview image"""
         if not icon_text:

@@ -290,12 +290,21 @@ class SimpleListManager:
                 for key, value in kwargs.items():
                     if key in item:
                         item[key] = value
-                self._refresh_listbox()
+                
+                # Only refresh listbox if title changed
+                if 'title' in kwargs:
+                    # Update label directly instead of full refresh
+                    for row in self.listbox.get_children():
+                        if hasattr(row, 'item_id') and row.item_id == item_id:
+                            hbox = row.get_child()
+                            label = hbox.get_children()[0]
+                            label.set_text(kwargs['title'])
+                            break
                 return True
         return False
-    
-    def save(self):
-        """Save to database - simple replace"""
+        
+        def save(self):
+            """Save to database - simple replace"""
         with self.db.transaction():
             # Mark all as inactive
             self.db.execute(

@@ -1,5 +1,5 @@
 """
-Enhanced toolbar with menu selector
+Enhanced toolbar with real import/export
 """
 
 import gi
@@ -7,14 +7,16 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 import os
 from datetime import datetime
-from typing import Optional
+from pathlib import Path
+from storage.import_export import ImportExportManager
 
 
 class Toolbar:
-    """Enhanced toolbar with menu selector"""
+    """Enhanced toolbar with real import/export"""
     
     def __init__(self, db):
         self.db = db
+        self.import_export = ImportExportManager(db)
         
         # Callbacks
         self.on_save = None
@@ -66,21 +68,6 @@ class Toolbar:
         new_menu_btn.set_size_request(30, -1)
         new_menu_btn.connect("clicked", self._on_new_menu)
         toolbar.pack_start(new_menu_btn, False, False, 0)
-        
-        # Separator
-        toolbar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 5)
-        
-        # Save button
-        self.save_btn = Gtk.Button.new_with_label("💾 Save")
-        self.save_btn.set_tooltip_text("Save all changes to database")
-        self.save_btn.connect("clicked", self._on_save_clicked)
-        toolbar.pack_start(self.save_btn, False, False, 0)
-        
-        # Reload button
-        self.reload_btn = Gtk.Button.new_with_label("🔄 Reload")
-        self.reload_btn.set_tooltip_text("Reload from database (discard changes)")
-        self.reload_btn.connect("clicked", self._on_reload_clicked)
-        toolbar.pack_start(self.reload_btn, False, False, 0)
         
         # Separator
         toolbar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 5)
@@ -210,59 +197,110 @@ class Toolbar:
         
         dialog.destroy()
     
-    def _on_save_clicked(self, button):
-        if self.on_save:
-            self.on_save()
-    
-    def _on_reload_clicked(self, button):
-        if self.on_reload:
-            self.on_reload()
-    
-    def _on_debug_clicked(self, button):
-        if self.on_debug:
-            self.on_debug()
-    
     def _on_export_clicked(self, button):
-        if self.on_export:
-            self.on_export()
-        else:
-            self._export_stub()
-    
-    def _on_import_clicked(self, button):
-        if self.on_import:
-            self.on_import()
-        else:
-            self._import_stub()
-    
-    def _export_stub(self):
-        """Stub export implementation"""
-        dialog = Gtk.FileChooserDialog(
+        """Handle export button click"""
+        if not self.current_menu_id:
+            self.show_message("No menu selected", 2)
+            return
+        
+        # Create format selection dialog
+        dialog = Gtk.Dialog(
             title="Export Menu",
             parent=None,
-            action=Gtk.FileChooserAction.SAVE
+            flags=0
         )
         dialog.add_buttons(
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
             "Export", Gtk.ResponseType.OK
         )
         
-        default_name = f"gmen_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        dialog.set_current_name(default_name)
+        dialog.set_default_size(400, 200)
         
-        filter_json = Gtk.FileFilter()
-        filter_json.set_name("JSON files")
-        filter_json.add_pattern("*.json")
-        dialog.add_filter(filter_json)
+        content = dialog.get_content_area()
         
+        # Format selection
+        format_label = Gtk.Label(label="<b>Export Format:</b>")
+        format_label.set_use_markup(True)
+        format_label.set_xalign(0)
+        content.pack_start(format_label, False, False, 5)
+        
+        format_combo = Gtk.ComboBoxText()
+        for fmt in self.import_export.get_supported_formats():
+            format_combo.append(fmt["id"], fmt["name"])
+        format_combo.set_active(0)  # JSON is first
+        
+        format_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        format_box.pack_start(Gtk.Label(label="Format:"), False, False, 0)
+        format_box.pack_start(format_combo, False, False, 0)
+        content.pack_start(format_box, False, False, 5)
+        
+        content.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 10)
+        
+        # Get menu name for default filename
+        menu = self.db.fetch_one(
+            "SELECT name FROM menus WHERE id = ?",
+            (self.current_menu_id,)
+        )
+        menu_name = menu['name'] if menu else "menu"
+        safe_name = "".join(c for c in menu_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        default_name = f"{safe_name}_export.json"
+        
+        # File chooser
+        file_chooser = Gtk.FileChooserButton(title="Select Export Location")
+        file_chooser.set_current_name(default_name)
+        
+        # Add filters for each format
+        for fmt in self.import_export.get_supported_formats():
+            filter = Gtk.FileFilter()
+            filter.set_name(f"{fmt['name']} files")
+            filter.add_pattern(f"*{fmt['extension']}")
+            file_chooser.add_filter(filter)
+        
+        content.pack_start(file_chooser, False, False, 5)
+        
+        dialog.show_all()
         response = dialog.run()
+        
         if response == Gtk.ResponseType.OK:
-            filename = dialog.get_filename()
-            self.show_message(f"Would export to: {filename}")
+            filename = file_chooser.get_filename()
+            format_id = format_combo.get_active_id()
+            
+            if filename:
+                try:
+                    # Ensure correct extension
+                    fmt_info = self.import_export.format_info(format_id)
+                    if not filename.endswith(fmt_info['extension']):
+                        filename += fmt_info['extension']
+                    
+                    # Do the export
+                    self.show_message("Exporting...")
+                    self.import_export.export_to_file(self.current_menu_id, filename, format_id)
+                    
+                    self.show_message(f"Exported to {Path(filename).name}", 3)
+                    print(f"✅ Exported menu {self.current_menu_id} to {filename}")
+                    
+                except Exception as e:
+                    error_msg = f"Export failed: {str(e)}"
+                    self.show_message(error_msg, 3)
+                    print(f"❌ Export error: {e}")
+                    
+                    # Show error dialog
+                    error_dialog = Gtk.MessageDialog(
+                        parent=dialog,
+                        flags=0,
+                        message_type=Gtk.MessageType.ERROR,
+                        buttons=Gtk.ButtonsType.OK,
+                        text="Export Failed"
+                    )
+                    error_dialog.format_secondary_text(str(e))
+                    error_dialog.run()
+                    error_dialog.destroy()
         
         dialog.destroy()
     
-    def _import_stub(self):
-        """Stub import implementation"""
+    def _on_import_clicked(self, button):
+        """Handle import button click"""
+        # Create file chooser dialog
         dialog = Gtk.FileChooserDialog(
             title="Import Menu",
             parent=None,
@@ -273,22 +311,100 @@ class Toolbar:
             "Import", Gtk.ResponseType.OK
         )
         
-        filter_json = Gtk.FileFilter()
-        filter_json.set_name("JSON files")
-        filter_json.add_pattern("*.json")
-        dialog.add_filter(filter_json)
+        # Add filters for supported formats
+        for fmt in self.import_export.get_supported_formats():
+            filter = Gtk.FileFilter()
+            filter.set_name(f"{fmt['name']} files (*{fmt['extension']})")
+            filter.add_pattern(f"*{fmt['extension']}")
+            dialog.add_filter(filter)
+        
+        # All supported files filter
+        all_filter = Gtk.FileFilter()
+        all_filter.set_name("All supported files")
+        for fmt in self.import_export.get_supported_formats():
+            all_filter.add_pattern(f"*{fmt['extension']}")
+        dialog.add_filter(all_filter)
         
         response = dialog.run()
+        
         if response == Gtk.ResponseType.OK:
             filename = dialog.get_filename()
-            self.show_message(f"Would import from: {filename}")
+            
+            if filename and os.path.exists(filename):
+                # Ask for menu name
+                name_dialog = Gtk.Dialog(
+                    title="Import Menu Name",
+                    parent=dialog,
+                    flags=0
+                )
+                name_dialog.add_buttons(
+                    Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                    "Import", Gtk.ResponseType.OK
+                )
+                
+                content = name_dialog.get_content_area()
+                
+                # Suggest name based on filename
+                suggested_name = Path(filename).stem.replace('_', ' ').title()
+                
+                name_label = Gtk.Label(label="<b>Menu Name:</b>")
+                name_label.set_use_markup(True)
+                name_label.set_xalign(0)
+                content.pack_start(name_label, False, False, 5)
+                
+                name_entry = Gtk.Entry()
+                name_entry.set_text(suggested_name)
+                name_entry.set_margin_top(5)
+                name_entry.set_margin_bottom(10)
+                content.pack_start(name_entry, True, True, 0)
+                
+                name_dialog.show_all()
+                name_response = name_dialog.run()
+                menu_name = name_entry.get_text().strip() if name_response == Gtk.ResponseType.OK else None
+                
+                name_dialog.destroy()
+                
+                if menu_name:
+                    try:
+                        self.show_message("Importing...")
+                        
+                        # Do the import
+                        new_menu_id = self.import_export.import_from_file(filename, menu_name)
+                        
+                        self.show_message(f"Imported '{menu_name}'", 3)
+                        print(f"✅ Imported menu from {filename} as ID {new_menu_id}")
+                        
+                        # Refresh menu list and select new menu
+                        self._load_menus()
+                        self.set_current_menu(new_menu_id, menu_name)
+                        
+                        if self.on_menu_selected:
+                            self.on_menu_selected(new_menu_id)
+                            
+                    except Exception as e:
+                        error_msg = f"Import failed: {str(e)}"
+                        self.show_message(error_msg, 3)
+                        print(f"❌ Import error: {e}")
+                        
+                        # Show error dialog
+                        error_dialog = Gtk.MessageDialog(
+                            parent=dialog,
+                            flags=0,
+                            message_type=Gtk.MessageType.ERROR,
+                            buttons=Gtk.ButtonsType.OK,
+                            text="Import Failed"
+                        )
+                        error_dialog.format_secondary_text(str(e))
+                        error_dialog.run()
+                        error_dialog.destroy()
         
         dialog.destroy()
     
     def show_message(self, message: str, duration: int = 3):
         """Show a message in the status area"""
         self.status_label.set_text(message)
-        GLib.timeout_add_seconds(duration, self._clear_message)
+        if duration > 0:
+            GLib.timeout_add_seconds(duration, self._clear_message)
     
     def _clear_message(self):
         """Clear the status message"""

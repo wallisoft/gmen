@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from storage.database import Database
 from ui.editor.three_panel_window import ThreePanelWindow
 
-
 def main():
     print("🚀 Starting Three Panel Editor")
     print("🖱️  Left Click Menu")
@@ -22,6 +21,11 @@ def main():
     
     config_dir = Path.home() / ".config" / "gmen"
     db = Database(config_dir)
+    
+    # Ensure menus directory exists
+    menus_dir = config_dir / "menus"
+    menus_dir.mkdir(exist_ok=True)
+    print(f"📁 Menus directory: {menus_dir}")
     
     try:
         editor = ThreePanelWindow(db)
@@ -37,7 +41,6 @@ def main():
         db.close()
     
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
