@@ -1,5 +1,6 @@
 """
 Database Layer - SQLite with thread-local connections
+Updated for item_instances schema
 """
 
 import sqlite3
@@ -13,7 +14,7 @@ from contextlib import contextmanager
 
 
 class Database:
-    """Thread-safe database abstraction"""
+    """Thread-safe database abstraction with instance-based schema"""
     
     def __init__(self, config_dir: Path):
         self.config_dir = config_dir
@@ -72,26 +73,15 @@ class Database:
         conn.commit()
         return cursor.rowcount
     
-    def fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict]:
-        """Fetch a single row"""
-        cursor = self._get_connection().execute(query, params)
-        row = cursor.fetchone()
-        if row:
-            return dict(row)
-        return None
-    
-    def fetch_all(self, query: str, params: tuple = ()) -> List[Dict]:
-        """Fetch all rows"""
-        cursor = self._get_connection().execute(query, params)
-        rows = cursor.fetchall()
-        return [dict(row) for row in rows]
-    
     def _init_database(self):
-        """Initialize database schema"""
+        """Initialize database with new schema"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        # Core tables
+        # Enable foreign keys
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
+        # Create tables in correct order
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS menus (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,37 +98,14 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 menu_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
-                command TEXT,
-                script_id INTEGER,
-                icon TEXT,
-                category TEXT,
-                tags TEXT,
-                depth INTEGER DEFAULT 0,
                 parent_id INTEGER,
+                depth INTEGER DEFAULT 0,
                 sort_order INTEGER DEFAULT 0,
                 is_active BOOLEAN DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (menu_id) REFERENCES menus(id) ON DELETE CASCADE,
                 FOREIGN KEY (parent_id) REFERENCES menu_items(id) ON DELETE CASCADE
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS window_states (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_id INTEGER NOT NULL,
-                instance_id TEXT,
-                x INTEGER,
-                y INTEGER,
-                width INTEGER,
-                height INTEGER,
-                display INTEGER DEFAULT 0,
-                state TEXT DEFAULT '',
-                is_active BOOLEAN DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (item_id) REFERENCES menu_items(id) ON DELETE CASCADE
             )
         """)
         
@@ -155,7 +122,57 @@ class Database:
             )
         """)
         
-        # Settings table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # NEW: item_instances with runtime tracking
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS item_instances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL,
+                workspace_id INTEGER,
+                instance_name TEXT,
+                
+                -- Content properties
+                command TEXT,
+                script_id INTEGER,
+                icon TEXT,
+                
+                -- Window properties
+                x INTEGER,
+                y INTEGER,
+                width INTEGER,
+                height INTEGER,
+                display INTEGER DEFAULT 0,
+                state TEXT DEFAULT 'normal',
+                
+                -- Script execution tracking
+                instance_pid INTEGER,
+                instance_status TEXT DEFAULT 'idle'
+                       CHECK(instance_status IN ('idle', 'launching', 'running', 'failed', 'killed')),
+                instance_output TEXT,
+                instance_exit_code INTEGER,
+                instance_started TIMESTAMP,
+                instance_ended TIMESTAMP,
+                
+                -- Instance metadata
+                is_default BOOLEAN DEFAULT 0,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                FOREIGN KEY (item_id) REFERENCES menu_items(id) ON DELETE CASCADE,
+                FOREIGN KEY (script_id) REFERENCES scripts(id) ON DELETE SET NULL,
+                FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
+            )
+        """)
+        
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -166,338 +183,452 @@ class Database:
             )
         """)
         
-        # Workspaces table (for future use)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS workspaces (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                window_data TEXT,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Create indexes for performance
+        # Create indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_menu_id ON menu_items(menu_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_parent_id ON menu_items(parent_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_sort_order ON menu_items(sort_order)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_is_active ON menu_items(is_active)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_window_states_item_id ON window_states(item_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_window_states_is_active ON window_states(is_active)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_item_instances_item_id ON item_instances(item_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_item_instances_workspace_id ON item_instances(workspace_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_item_instances_is_default ON item_instances(is_default)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_item_instances_instance_status ON item_instances(instance_status)")
         
-        # Insert default menu if none exists
-        cursor.execute("SELECT COUNT(*) as count FROM menus")
-        if cursor.fetchone()['count'] == 0:
-            cursor.execute("""
-                INSERT INTO menus (name, description, is_default)
-                VALUES (?, ?, 1)
-            """, ("Main Menu", "Default application menu"))
-            print("📋 Created default 'Main Menu'")
+        # Ensure default workspace exists
+        cursor.execute("INSERT OR IGNORE INTO workspaces (id, name, description) VALUES (1, 'Default Workspace', 'Auto-created default workspace')")
+        
+        # Ensure default menu exists
+        cursor.execute("INSERT OR IGNORE INTO menus (id, name, description, is_default) VALUES (1, 'Main Menu', 'Default application menu', 1)")
         
         conn.commit()
-        print(f"📊 Database initialized at {self.db_path}")
+        
+        # Check if migration needed
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='window_states'")
+        if cursor.fetchone():
+            self._migrate_old_schema(conn)
+        
+        print(f"✅ Database initialized at {self.db_path}")
+    
+    def _migrate_old_schema(self, conn):
+        """Migrate from old schema to new item_instances schema"""
+        cursor = conn.cursor()
+        print("🔄 Migrating to new instance-based schema...")
+        
+        try:
+            # 1. Create item_instances from menu_items commands/icons
+            cursor.execute("""
+                SELECT id, command, icon FROM menu_items 
+                WHERE command IS NOT NULL OR icon IS NOT NULL
+            """)
+            
+            for item_id, command, icon in cursor.fetchall():
+                cursor.execute("""
+                    INSERT INTO item_instances 
+                    (item_id, workspace_id, instance_name, command, icon, is_default, instance_status)
+                    VALUES (?, NULL, 'Default', ?, ?, 1, 'idle')
+                """, (item_id, command, icon))
+            
+            # 2. Migrate window_states to item_instances
+            cursor.execute("""
+                SELECT ws.item_id, ws.instance_id, ws.x, ws.y, ws.width, ws.height, 
+                       ws.display, ws.state, ws.script_status, ws.script_pid
+                FROM window_states ws
+                JOIN menu_items mi ON ws.item_id = mi.id
+                WHERE ws.is_active = 1
+            """)
+            
+            for row in cursor.fetchall():
+                item_id, instance_id, x, y, width, height, display, state, script_status, script_pid = row
+                
+                # Find or create instance for this window state
+                cursor.execute("""
+                    SELECT id FROM item_instances 
+                    WHERE item_id = ? AND instance_name = ?
+                """, (item_id, instance_id or 'Default'))
+                
+                instance = cursor.fetchone()
+                if instance:
+                    # Update existing instance with window data
+                    cursor.execute("""
+                        UPDATE item_instances 
+                        SET x = ?, y = ?, width = ?, height = ?, display = ?, state = ?,
+                            instance_status = COALESCE(?, 'idle'), instance_pid = ?
+                        WHERE id = ?
+                    """, (x, y, width, height, display, state, script_status, script_pid, instance[0]))
+                else:
+                    # Create new instance with window data
+                    cursor.execute("""
+                        INSERT INTO item_instances 
+                        (item_id, workspace_id, instance_name, x, y, width, height, 
+                         display, state, instance_status, instance_pid, is_active)
+                        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """, (item_id, instance_id or 'Default', x, y, width, height, 
+                          display, state, script_status or 'idle', script_pid))
+            
+            # 3. Clear old fields from menu_items
+            cursor.execute("""
+                UPDATE menu_items 
+                SET command = NULL, icon = NULL
+            """)
+            
+            # 4. Drop old table
+            cursor.execute("DROP TABLE IF EXISTS window_states")
+            
+            conn.commit()
+            print("✅ Migration complete!")
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ Migration failed: {e}")
+            raise
     
     def _update_schema(self):
-        """Update database schema for existing installations"""
+        """Update schema if needed (future migrations)"""
+        # Currently just the initial migration above
+        pass
+    
+    # === MENU ITEMS (title/hierarchy only) ===
+    
+    def get_menu_items(self, menu_id, active_only=True):
+        """Get menu items (without command/icon - those are in instances)"""
+        cursor = self.get_cursor()
+        
+        if active_only:
+            query = """
+                SELECT id, title, parent_id, depth, sort_order, is_active
+                FROM menu_items 
+                WHERE menu_id = ? AND is_active = 1
+                ORDER BY sort_order
+            """
+        else:
+            query = """
+                SELECT id, title, parent_id, depth, sort_order, is_active
+                FROM menu_items 
+                WHERE menu_id = ?
+                ORDER BY sort_order
+            """
+        
+        cursor.execute(query, (menu_id,))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def create_menu_item(self, menu_id, title, parent_id=None, depth=0):
+        """Create a new menu item (title only)"""
+        cursor = self.get_cursor()
+        cursor.execute("""
+            INSERT INTO menu_items (menu_id, title, parent_id, depth, sort_order)
+            VALUES (?, ?, ?, ?, 
+                (SELECT COALESCE(MAX(sort_order), 0) + 10 
+                 FROM menu_items WHERE menu_id = ?))
+        """, (menu_id, title, parent_id, depth, menu_id))
+        conn = self._get_connection()
+        conn.commit()
+        return cursor.lastrowid
+    
+    def update_menu_item(self, item_id, **kwargs):
+        """Update menu item properties"""
+        if not kwargs:
+            return 0
+        
+        set_clauses = []
+        params = []
+        for key, value in kwargs.items():
+            if key in ['title', 'parent_id', 'depth', 'sort_order', 'is_active']:
+                set_clauses.append(f"{key} = ?")
+                params.append(value)
+        
+        if not set_clauses:
+            return 0
+        
+        params.append(item_id)
+        query = f"""
+            UPDATE menu_items 
+            SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """
+        
+        return self.execute(query, tuple(params))
+    
+    def delete_menu_item(self, item_id):
+        """Delete a menu item (cascades to instances)"""
+        return self.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
+    
+    # === ITEM INSTANCES (complete instance definitions) ===
+    
+    def get_item_instances(self, item_id, workspace_id=None):
+        """Get all instances for an item, optionally filtered by workspace"""
+        cursor = self.get_cursor()
+        
+        if workspace_id:
+            query = """
+                SELECT id, item_id, workspace_id, instance_name,
+                       command, script_id, icon,
+                       x, y, width, height, display, state,
+                       instance_pid, instance_status, instance_output,
+                       instance_exit_code, instance_started, instance_ended,
+                       is_default, is_active
+                FROM item_instances 
+                WHERE item_id = ? AND (workspace_id = ? OR workspace_id IS NULL)
+                ORDER BY is_default DESC, id
+            """
+            cursor.execute(query, (item_id, workspace_id))
+        else:
+            query = """
+                SELECT id, item_id, workspace_id, instance_name,
+                       command, script_id, icon,
+                       x, y, width, height, display, state,
+                       instance_pid, instance_status, instance_output,
+                       instance_exit_code, instance_started, instance_ended,
+                       is_default, is_active
+                FROM item_instances 
+                WHERE item_id = ? 
+                ORDER BY is_default DESC, id
+            """
+            cursor.execute(query, (item_id,))
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_default_instance(self, item_id):
+        """Get the default instance for an item"""
+        cursor = self.get_cursor()
+        cursor.execute("""
+            SELECT id, item_id, workspace_id, instance_name,
+                   command, script_id, icon,
+                   x, y, width, height, display, state,
+                   instance_pid, instance_status,
+                   is_default, is_active
+            FROM item_instances 
+            WHERE item_id = ? AND is_default = 1 AND is_active = 1
+            LIMIT 1
+        """, (item_id,))
+        
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def save_item_instance(self, instance_data):
+        """Save or update an item instance"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        # Check and add missing columns to menus table
-        cursor.execute("PRAGMA table_info(menus)")
-        menu_columns = {col[1] for col in cursor.fetchall()}
-        
-        if 'description' not in menu_columns:
-            cursor.execute("ALTER TABLE menus ADD COLUMN description TEXT")
-        
-        # Check and add missing columns to menu_items table
-        cursor.execute("PRAGMA table_info(menu_items)")
-        item_columns = {col[1] for col in cursor.fetchall()}
-        
-        missing_item_columns = {
-            'category': 'TEXT',
-            'tags': 'TEXT',
-            'is_active': 'BOOLEAN DEFAULT 1',
-            'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
-            'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-        }
-        
-        for col_name, col_type in missing_item_columns.items():
-            if col_name not in item_columns:
-                cursor.execute(f"ALTER TABLE menu_items ADD COLUMN {col_name} {col_type}")
-        
-        # Check and add missing columns to window_states table
-        cursor.execute("PRAGMA table_info(window_states)")
-        window_columns = {col[1] for col in cursor.fetchall()}
-        
-        missing_window_columns = {
-            'instance_id': 'TEXT',
-            'display': 'INTEGER DEFAULT 0',
-            'state': 'TEXT DEFAULT ""',
-            'is_active': 'BOOLEAN DEFAULT 1',
-            'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
-            'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-        }
-        
-        for col_name, col_type in missing_window_columns.items():
-            if col_name not in window_columns:
-                cursor.execute(f"ALTER TABLE window_states ADD COLUMN {col_name} {col_type}")
-        
-        # Check and add missing columns to scripts table
-        cursor.execute("PRAGMA table_info(scripts)")
-        script_columns = {col[1] for col in cursor.fetchall()}
-        
-        if 'description' not in script_columns:
-            cursor.execute("ALTER TABLE scripts ADD COLUMN description TEXT")
-        if 'tags' not in script_columns:
-            cursor.execute("ALTER TABLE scripts ADD COLUMN tags TEXT")
+        if 'id' in instance_data and instance_data['id']:
+            # Update existing instance
+            cursor.execute("""
+                UPDATE item_instances 
+                SET item_id = ?, workspace_id = ?, instance_name = ?,
+                    command = ?, script_id = ?, icon = ?,
+                    x = ?, y = ?, width = ?, height = ?, display = ?, state = ?,
+                    instance_pid = ?, instance_status = ?, instance_output = ?,
+                    instance_exit_code = ?, instance_started = ?, instance_ended = ?,
+                    is_default = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                instance_data.get('item_id'),
+                instance_data.get('workspace_id'),
+                instance_data.get('instance_name'),
+                instance_data.get('command'),
+                instance_data.get('script_id'),
+                instance_data.get('icon'),
+                instance_data.get('x'),
+                instance_data.get('y'),
+                instance_data.get('width'),
+                instance_data.get('height'),
+                instance_data.get('display', 0),
+                instance_data.get('state', 'normal'),
+                instance_data.get('instance_pid'),
+                instance_data.get('instance_status', 'idle'),
+                instance_data.get('instance_output'),
+                instance_data.get('instance_exit_code'),
+                instance_data.get('instance_started'),
+                instance_data.get('instance_ended'),
+                instance_data.get('is_default', 0),
+                instance_data.get('is_active', 1),
+                instance_data['id']
+            ))
+            instance_id = instance_data['id']
+        else:
+            # Insert new instance
+            cursor.execute("""
+                INSERT INTO item_instances 
+                (item_id, workspace_id, instance_name,
+                 command, script_id, icon,
+                 x, y, width, height, display, state,
+                 instance_pid, instance_status, instance_output,
+                 instance_exit_code, instance_started, instance_ended,
+                 is_default, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                instance_data['item_id'],
+                instance_data.get('workspace_id'),
+                instance_data.get('instance_name'),
+                instance_data.get('command'),
+                instance_data.get('script_id'),
+                instance_data.get('icon'),
+                instance_data.get('x'),
+                instance_data.get('y'),
+                instance_data.get('width'),
+                instance_data.get('height'),
+                instance_data.get('display', 0),
+                instance_data.get('state', 'normal'),
+                instance_data.get('instance_pid'),
+                instance_data.get('instance_status', 'idle'),
+                instance_data.get('instance_output'),
+                instance_data.get('instance_exit_code'),
+                instance_data.get('instance_started'),
+                instance_data.get('instance_ended'),
+                instance_data.get('is_default', 0),
+                instance_data.get('is_active', 1)
+            ))
+            instance_id = cursor.lastrowid
         
         conn.commit()
+        return instance_id
     
-    # Menu management methods
-    def get_menu(self, menu_name: str) -> Optional[Dict]:
-        """Get menu by name"""
-        return self.fetch_one("SELECT * FROM menus WHERE name = ?", (menu_name,))
+    def delete_item_instance(self, instance_id):
+        """Delete an item instance"""
+        return self.execute("DELETE FROM item_instances WHERE id = ?", (instance_id,))
     
-    def get_default_menu(self) -> Optional[Dict]:
-        """Get default menu"""
-        return self.fetch_one("SELECT * FROM menus WHERE is_default = 1 LIMIT 1")
-    
-    def create_menu(self, name: str, description: str = "", is_default: bool = False) -> int:
-        """Create a new menu"""
-        if is_default:
-            # Clear any existing default
-            self.execute("UPDATE menus SET is_default = 0")
+    def get_workspace_instances(self, workspace_id):
+        """Get all instances for a workspace"""
+        cursor = self.get_cursor()
+        cursor.execute("""
+            SELECT ii.*, mi.title as item_title
+            FROM item_instances ii
+            JOIN menu_items mi ON ii.item_id = mi.id
+            WHERE ii.workspace_id = ? AND ii.is_active = 1
+            ORDER BY mi.sort_order, ii.is_default DESC
+        """, (workspace_id,))
         
-        self.execute("""
-            INSERT INTO menus (name, description, is_default)
-            VALUES (?, ?, ?)
-        """, (name, description, 1 if is_default else 0))
-        
-        return self._get_connection().lastrowid
+        return [dict(row) for row in cursor.fetchall()]
     
-    # Menu item management methods
-    def get_menu_items(self, menu_id: int, active_only: bool = True) -> List[Dict]:
-        """Get all items for a menu"""
-        query = """
-            SELECT * FROM menu_items 
-            WHERE menu_id = ?
+    # === RUNTIME METHODS (for gmen launcher) ===
+    
+    def update_instance_runtime(self, instance_id, **kwargs):
+        """Update runtime fields of an instance (pid, status, etc.)"""
+        allowed_fields = ['instance_pid', 'instance_status', 'instance_output',
+                         'instance_exit_code', 'instance_started', 'instance_ended']
+        
+        set_clauses = []
+        params = []
+        for key, value in kwargs.items():
+            if key in allowed_fields:
+                set_clauses.append(f"{key} = ?")
+                params.append(value)
+        
+        if not set_clauses:
+            return 0
+        
+        params.append(instance_id)
+        query = f"""
+            UPDATE item_instances 
+            SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
         """
-        params = [menu_id]
         
-        if active_only:
-            query += " AND is_active = 1"
-        
-        query += " ORDER BY sort_order, title"
-        
-        return self.fetch_all(query, tuple(params))
+        return self.execute(query, tuple(params))
     
-    def get_menu_item(self, item_id: int) -> Optional[Dict]:
-        """Get a specific menu item"""
-        return self.fetch_one("SELECT * FROM menu_items WHERE id = ?", (item_id,))
+    def get_running_instances(self):
+        """Get all instances that are currently running"""
+        cursor = self.get_cursor()
+        cursor.execute("""
+            SELECT ii.*, mi.title as item_title
+            FROM item_instances ii
+            JOIN menu_items mi ON ii.item_id = mi.id
+            WHERE ii.instance_status = 'running' AND ii.instance_pid IS NOT NULL
+            ORDER BY ii.instance_started
+        """)
+        
+        return [dict(row) for row in cursor.fetchall()]
     
-    def add_menu_item(self, menu_id: int, title: str, command: str = None,
-                     script_id: int = None, icon: str = None, category: str = None,
-                     parent_id: int = None, sort_order: int = 0) -> int:
-        """Add a new menu item"""
-        
-        # Calculate depth
-        depth = 0
-        if parent_id:
-            parent = self.get_menu_item(parent_id)
-            if parent:
-                depth = parent.get('depth', 0) + 1
-        
+    # === EXISTING METHODS (unchanged or slightly modified) ===
+    
+    def get_all_menus(self):
+        cursor = self.get_cursor()
+        cursor.execute("SELECT * FROM menus ORDER BY is_default DESC, name")
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_menu(self, name):
+        cursor = self.get_cursor()
+        cursor.execute("SELECT * FROM menus WHERE name = ?", (name,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def create_menu(self, name, description=""):
+        cursor = self.get_cursor()
+        cursor.execute("""
+            INSERT INTO menus (name, description) 
+            VALUES (?, ?)
+        """, (name, description))
         conn = self._get_connection()
-        cursor = conn.execute("""
-            INSERT INTO menu_items 
-            (menu_id, title, command, script_id, icon, category, 
-             depth, parent_id, sort_order, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-        """, (menu_id, title, command, script_id, icon, category,
-              depth, parent_id, sort_order))
+        conn.commit()
+        return cursor.lastrowid
+    
+    def get_all_scripts(self):
+        cursor = self.get_cursor()
+        cursor.execute("SELECT * FROM scripts ORDER BY name")
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_script(self, script_id):
+        cursor = self.get_cursor()
+        cursor.execute("SELECT * FROM scripts WHERE id = ?", (script_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def save_script(self, script_data):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        if 'id' in script_data and script_data['id']:
+            cursor.execute("""
+                UPDATE scripts 
+                SET name = ?, content = ?, language = ?, 
+                    description = ?, tags = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                script_data['name'],
+                script_data['content'],
+                script_data.get('language', 'bash'),
+                script_data.get('description'),
+                script_data.get('tags'),
+                script_data['id']
+            ))
+            script_id = script_data['id']
+        else:
+            cursor.execute("""
+                INSERT INTO scripts (name, content, language, description, tags)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                script_data['name'],
+                script_data['content'],
+                script_data.get('language', 'bash'),
+                script_data.get('description'),
+                script_data.get('tags')
+            ))
+            script_id = cursor.lastrowid
         
         conn.commit()
-        return cursor.lastrowid  # Get from the cursor
+        return script_id
     
-    def update_menu_item(self, item_id: int, **kwargs):
-        """Update a menu item"""
-        if not kwargs:
-            return
-        
-        set_clause = ", ".join([f"{key} = ?" for key in kwargs.keys()])
-        params = list(kwargs.values())
-        params.append(item_id)
-        
-        query = f"UPDATE menu_items SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-        self.execute(query, tuple(params))
+    def fetch_one(self, query, params=()):
+        """Execute a query and return first row as dict"""
+        cursor = self.get_cursor()
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        return dict(row) if row else None
     
-    def delete_menu_item(self, item_id: int, cascade: bool = True):
-        """Delete a menu item"""
-        if cascade:
-            # Delete child items first
-            self.execute("DELETE FROM menu_items WHERE parent_id = ?", (item_id,))
-        
-        self.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
+    def fetch_all(self, query, params=()):
+        """Execute a query and return all rows as list of dicts"""
+        cursor = self.get_cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
     
-    # Window state management methods
-    def get_window_state(self, item_id: int) -> Optional[Dict]:
-        """Get window state for an item"""
-        return self.fetch_one("""
-            SELECT * FROM window_states 
-            WHERE item_id = ? AND is_active = 1
-            ORDER BY updated_at DESC LIMIT 1
-        """, (item_id,))
-    
-    def save_window_state(self, item_id: int, instance_id: str, 
-                         x: int, y: int, width: int, height: int,
-                         display: int = 0, state: str = ""):
-        """Save window state"""
-        
-        # Check if exists
-        existing = self.fetch_one(
-            "SELECT id FROM window_states WHERE item_id = ? AND is_active = 1",
-            (item_id,)
-        )
-        
-        if existing:
-            self.execute("""
-                UPDATE window_states 
-                SET x = ?, y = ?, width = ?, height = ?, 
-                    display = ?, state = ?, instance_id = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE item_id = ? AND is_active = 1
-            """, (x, y, width, height, display, state, instance_id, item_id))
-        else:
-            self.execute("""
-                INSERT INTO window_states 
-                (item_id, instance_id, x, y, width, height, display, state, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-            """, (item_id, instance_id, x, y, width, height, display, state))
-    
-    # Script management methods
-    def get_script(self, script_id: int) -> Optional[Dict]:
-        """Get script by ID"""
-        return self.fetch_one("SELECT * FROM scripts WHERE id = ?", (script_id,))
-    
-    def get_script_by_name(self, name: str) -> Optional[Dict]:
-        """Get script by name"""
-        return self.fetch_one("SELECT * FROM scripts WHERE name = ?", (name,))
-    
-    def get_all_scripts(self, include_content: bool = False) -> List[Dict]:
-        """Get all scripts"""
-        if include_content:
-            return self.fetch_all("SELECT * FROM scripts ORDER BY name")
-        else:
-            return self.fetch_all("SELECT id, name, language, description FROM scripts ORDER BY name")
-    
-    def save_script(self, name: str, content: str, language: str = "bash",
-                   description: str = "") -> int:
-        """Save or update a script"""
-        
-        existing = self.get_script_by_name(name)
-        
-        if existing:
-            self.execute("""
-                UPDATE scripts 
-                SET content = ?, language = ?, description = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE name = ?
-            """, (content, language, description, name))
-            return existing['id']
-        else:
-            self.execute("""
-                INSERT INTO scripts (name, content, language, description)
-                VALUES (?, ?, ?, ?)
-            """, (name, content, language, description))
-            return self._get_connection().lastrowid
-    
-    # Settings management methods
-    def get_setting(self, key: str, default: str = "") -> str:
-        """Get a setting value"""
-        result = self.fetch_one("SELECT value FROM settings WHERE key = ?", (key,))
-        return result['value'] if result else default
-    
-    def set_setting(self, key: str, value: str, description: str = "", category: str = "general"):
-        """Set a setting value"""
-        self.execute("""
-            INSERT OR REPLACE INTO settings (key, value, description, category)
-            VALUES (?, ?, ?, ?)
-        """, (key, value, description, category))
-    
-    def get_all_settings(self, category: str = None) -> List[Dict]:
-        """Get all settings, optionally filtered by category"""
-        if category:
-            return self.fetch_all("SELECT * FROM settings WHERE category = ? ORDER BY key", (category,))
-        else:
-            return self.fetch_all("SELECT * FROM settings ORDER BY category, key")
-    
-    # Utility methods
-    def backup(self, backup_path: Path = None):
+    def backup(self, backup_path=None):
         """Create a backup of the database"""
         if backup_path is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = self.config_dir / f"gmen_backup_{timestamp}.db"
+            backup_path = self.config_dir / f"gmen.db.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         shutil.copy2(self.db_path, backup_path)
-        print(f"📋 Database backed up to {backup_path}")
+        print(f"💾 Backup created: {backup_path}")
         return backup_path
-    
-    def vacuum(self):
-        """Vacuum the database to optimize"""
-        self.execute("VACUUM")
-        print("🧹 Database vacuumed")
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get database statistics"""
-        stats = {}
-        
-        # Get counts
-        tables = ['menus', 'menu_items', 'window_states', 'scripts', 'settings', 'workspaces']
-        for table in tables:
-            result = self.fetch_one(f"SELECT COUNT(*) as count FROM {table}")
-            if result:
-                stats[f"{table}_count"] = result['count']
-        
-        # Get database size
-        if self.db_path.exists():
-            stats['db_size'] = self.db_path.stat().st_size
-        
-        # Get last update times
-        for table in ['menus', 'menu_items', 'scripts']:
-            result = self.fetch_one(f"SELECT MAX(updated_at) as last_update FROM {table}")
-            if result and result['last_update']:
-                stats[f"{table}_last_update"] = result['last_update']
-        
-        return stats
-    
-    def set_mouse_menu_mapping(self, left_menu_id: int = 1, middle_menu_id: int = 1, right_menu_id: int = 1):
-        """Set which menus are triggered by which mouse button"""
-        self.set_setting('mouse_left_menu', str(left_menu_id), 'Menu ID for left click')
-        self.set_setting('mouse_middle_menu', str(middle_menu_id), 'Menu ID for middle click')
-        self.set_setting('mouse_right_menu', str(right_menu_id), 'Menu ID for right click')
-        print(f"🖱️ Set mouse menu mapping: L={left_menu_id}, M={middle_menu_id}, R={right_menu_id}")
-
-    def get_mouse_menu_mapping(self) -> Dict[str, int]:
-        """Get mouse button to menu mapping"""
-        return {
-            'left': int(self.get_setting('mouse_left_menu', '1')),
-            'middle': int(self.get_setting('mouse_middle_menu', '1')),
-            'right': int(self.get_setting('mouse_right_menu', '1'))
-        }
-
-    def get_all_menus(self) -> List[Dict]:
-        """Get all menus for selection dropdown"""
-        return self.fetch_all("SELECT id, name, is_default FROM menus ORDER BY name")
 
     def close(self):
-        """Close all connections"""
+        """Close database connection"""
         if hasattr(self._local, 'conn') and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
-    
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+

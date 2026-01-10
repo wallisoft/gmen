@@ -1,5 +1,5 @@
 """
-Property panel with script dialog and window controls
+Property panel with script dialog, window controls, and instance management
 Cleaned up - no exit button
 """
 
@@ -12,12 +12,13 @@ from typing import Optional
 
 
 class PropertyPanel:
-    """Enhanced property panel with script dialog and window controls"""
+    """Enhanced property panel with script dialog, window controls, and instance management"""
     
     def __init__(self, db=None):
         self.db = db
         self.on_property_changed = None
         self.current_item_id = None
+        self.current_instance_id = None
         
         # Flag to prevent event loops
         self._is_loading = False
@@ -37,6 +38,11 @@ class PropertyPanel:
         self.window_width_entry = None
         self.window_height_entry = None
         self.window_state_combo = None
+        
+        # Instance management
+        self.instance_combo = None
+        self.instance_plus_btn = None
+        self.instance_minus_btn = None
         
         self._init_widgets()
     
@@ -85,9 +91,21 @@ class PropertyPanel:
         
         self.icon_container = icon_box
         
-        # Window positioning checkbox
-        self.remember_window_cb = Gtk.CheckButton(label="Remember Window Position")
+        # Window positioning checkbox - no text, inline with label
+        self.remember_window_cb = Gtk.CheckButton()
+        self.remember_window_cb.set_tooltip_text("Remember window position")
         self.remember_window_cb.connect("toggled", self._on_window_remember_toggled)
+        
+        # Window positioning header with checkbox inline
+        window_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        window_label = Gtk.Label()
+        window_label.set_markup("<b>Window Position</b>")
+        window_label.set_xalign(0)
+        window_header_box.pack_start(window_label, False, False, 0)
+        window_header_box.pack_start(self.remember_window_cb, False, False, 0)
+        window_header_box.pack_start(Gtk.Label(), True, True, 0)  # Spacer
+        
+        self.window_header_container = window_header_box
         
         # Window positioning controls
         window_box = Gtk.Grid()
@@ -137,209 +155,43 @@ class PropertyPanel:
         
         self.window_container = window_box
         
-        # Info labels
-        self.id_label = Gtk.Label(label="ID: --")
-        self.depth_label = Gtk.Label(label="Depth: --")
-        self.type_label = Gtk.Label(label="Type: --")
+        # Instance management - compact 2-char combo
+        self.instance_combo = Gtk.ComboBoxText()
+        self.instance_combo.set_tooltip_text("Window instance")
+        self.instance_combo.set_size_request(30, -1)
+        self.instance_combo.connect("changed", self._on_instance_changed)
+        
+        self.instance_plus_btn = Gtk.Button.new_with_label("+")
+        self.instance_plus_btn.set_tooltip_text("Add instance")
+        self.instance_plus_btn.set_size_request(25, -1)
+        self.instance_plus_btn.connect("clicked", self._on_add_instance)
+        
+        self.instance_minus_btn = Gtk.Button.new_with_label("-")
+        self.instance_minus_btn.set_tooltip_text("Delete current instance")
+        self.instance_minus_btn.set_size_request(25, -1)
+        self.instance_minus_btn.connect("clicked", self._on_remove_instance)
     
-    def create_panel(self):
-        """Create the property panel frame - 50% wider"""
-        frame = Gtk.Frame(label="⚙️ Properties")
-        frame.set_shadow_type(Gtk.ShadowType.IN)
-        frame.set_size_request(400, -1)  # 50% wider than typical 250-300px
-        
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        vbox.set_margin_top(12)
-        vbox.set_margin_bottom(12)
-        vbox.set_margin_start(12)
-        vbox.set_margin_end(12)
-        frame.add(vbox)
-        
-        # Title
-        vbox.pack_start(self._create_label("Title"), False, False, 0)
-        vbox.pack_start(self.title_entry, False, False, 0)
-        
-        # Command
-        vbox.pack_start(self._create_label("Command"), False, False, 5)
-        vbox.pack_start(self.command_container, False, False, 0)
-        
-        # Icon
-        vbox.pack_start(self._create_label("Icon"), False, False, 5)
-        vbox.pack_start(self.icon_container, False, False, 0)
-        
-        # Window positioning with checkbox
-        vbox.pack_start(self._create_label("Window Position"), False, False, 10)
-        vbox.pack_start(self.remember_window_cb, False, False, 5)
-        vbox.pack_start(self.window_container, False, False, 0)
-        
-        # Tile button
-        tile_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        tile_btn = Gtk.Button.new_with_label("⎔ Tile Alongside")
-        tile_btn.set_tooltip_text("Position this window next to the last positioned window")
-        tile_btn.connect("clicked", self._on_tile_clicked)
-        tile_box.pack_start(tile_btn, False, False, 0)
-        vbox.pack_start(tile_box, False, False, 5)
-        
-        # Separator
-        vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 10)
-        
-        # Info grid
-        grid = Gtk.Grid()
-        grid.set_column_spacing(10)
-        grid.set_row_spacing(6)
-        
-        grid.attach(self._create_info_label("ID:"), 0, 0, 1, 1)
-        grid.attach(self.id_label, 1, 0, 1, 1)
-        
-        grid.attach(self._create_info_label("Depth:"), 0, 1, 1, 1)
-        grid.attach(self.depth_label, 1, 1, 1, 1)
-        
-        grid.attach(self._create_info_label("Type:"), 0, 2, 1, 1)
-        grid.attach(self.type_label, 1, 2, 1, 1)
-        
-        vbox.pack_start(grid, False, False, 0)
-        
-        # Expand
-        vbox.pack_start(Gtk.Label(), True, True, 0)
-        
-        return frame
+    # === PROPERTY HANDLERS ===
     
-    def _create_label(self, text):
-        """Create a section label"""
-        label = Gtk.Label(label=f"<b>{text}</b>")
-        label.set_use_markup(True)
-        label.set_xalign(0)
-        return label
+    def _on_title_changed(self, entry):
+        """Handle title change"""
+        if not self._is_loading and self.current_item_id and self.on_property_changed:
+            new_title = entry.get_text()
+            self.on_property_changed(self.current_item_id, 'title', new_title)
     
-    def _create_info_label(self, text):
-        """Create an info label"""
-        label = Gtk.Label(label=f"<small>{text}</small>")
-        label.set_use_markup(True)
-        label.set_xalign(1)
-        return label
+    def _on_command_changed(self, entry):
+        """Handle command change"""
+        if not self._is_loading and self.current_item_id and self.on_property_changed:
+            new_command = entry.get_text()
+            self.on_property_changed(self.current_item_id, 'command', new_command)
     
-    def load_item(self, item):
-        """Load item properties including window state"""
-        # Set loading flag to prevent event loops
-        self._is_loading = True
-        
-        self.current_item_id = item.id
-        
-        # Update fields
-        self.title_entry.set_text(item.title)
-        self.command_entry.set_text(item.command or "")
-        self.icon_entry.set_text(item.icon or "")
-        
-        # Update icon preview
-        self._update_icon_preview(item.icon or "")
-        
-        # Load window state
-        has_window_state = bool(item.window_state)
-        self.remember_window_cb.set_active(has_window_state)
-        
-        if item.window_state:
-            self.window_x_entry.set_text(str(item.window_state.get('x', '')))
-            self.window_y_entry.set_text(str(item.window_state.get('y', '')))
-            self.window_width_entry.set_text(str(item.window_state.get('width', '')))
-            self.window_height_entry.set_text(str(item.window_state.get('height', '')))
-            
-            state = item.window_state.get('state', 'Normal')
-            if state == 'maximized':
-                self.window_state_combo.set_active(1)
-            elif state == 'minimized':
-                self.window_state_combo.set_active(2)
-            elif state == 'fullscreen':
-                self.window_state_combo.set_active(3)
-            else:
-                self.window_state_combo.set_active(0)
-        else:
-            self.window_x_entry.set_text("")
-            self.window_y_entry.set_text("")
-            self.window_width_entry.set_text("")
-            self.window_height_entry.set_text("")
-            self.window_state_combo.set_active(0)
-        
-        # Update info labels
-        db_id = f"DB:{item.db_id}" if item.db_id else f"Temp:{item.id[:8]}"
-        self.id_label.set_text(db_id)
-        self.depth_label.set_text(str(item.depth))
-        
-        # Determine type
-        item_type = "Folder"
-        if item.command:
-            if hasattr(item, 'is_script') and item.is_script():
-                item_type = "Script"
-            else:
-                item_type = "Command"
-        self.type_label.set_text(item_type)
-        
-        # Clear loading flag
-        self._is_loading = False
-        
-        # Only print if we have a real change (not initial load)
-        if not getattr(item, '_is_initial_load', False):
-            print(f"📋 PropertyPanel loaded item {item.id}")
+    def _on_icon_changed(self, entry):
+        """Handle icon change"""
+        if not self._is_loading and self.current_item_id and self.on_property_changed:
+            new_icon = entry.get_text()
+            self.on_property_changed(self.current_item_id, 'icon', new_icon)
+            self._update_icon_preview(new_icon)
     
-    def clear(self):
-        """Clear the panel"""
-        self._is_loading = True
-        self.current_item_id = None
-        self.title_entry.set_text("")
-        self.command_entry.set_text("")
-        self.icon_entry.set_text("")
-        self.icon_preview.clear()
-        
-        # Clear window controls
-        self.remember_window_cb.set_active(False)
-        self.window_x_entry.set_text("")
-        self.window_y_entry.set_text("")
-        self.window_width_entry.set_text("")
-        self.window_height_entry.set_text("")
-        self.window_state_combo.set_active(0)
-        
-        self.id_label.set_text("ID: --")
-        self.depth_label.set_text("Depth: --")
-        self.type_label.set_text("Type: --")
-        self._is_loading = False
-    
-    def create_panel_contents(self):
-        """Create just the contents (for external framing)"""
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        vbox.set_margin_top(12)
-        vbox.set_margin_bottom(12)
-        vbox.set_margin_start(12)
-        vbox.set_margin_end(12)
-        
-        vbox.pack_start(self._create_label("Title"), False, False, 0)
-        vbox.pack_start(self.title_entry, False, False, 0)
-        vbox.pack_start(self._create_label("Command"), False, False, 5)
-        vbox.pack_start(self.command_container, False, False, 0)
-        vbox.pack_start(self._create_label("Icon"), False, False, 5)
-        vbox.pack_start(self.icon_container, False, False, 0)
-        vbox.pack_start(self._create_label("Window Position"), False, False, 10)
-        vbox.pack_start(self.remember_window_cb, False, False, 5)
-        vbox.pack_start(self.window_container, False, False, 0)
-        
-        tile_btn = Gtk.Button.new_with_label("⎔ Tile Alongside")
-        tile_btn.connect("clicked", self._on_tile_clicked)
-        vbox.pack_start(tile_btn, False, False, 5)
-        
-        vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 10)
-        
-        grid = Gtk.Grid()
-        grid.set_column_spacing(10)
-        grid.set_row_spacing(6)
-        grid.attach(self._create_info_label("ID:"), 0, 0, 1, 1)
-        grid.attach(self.id_label, 1, 0, 1, 1)
-        grid.attach(self._create_info_label("Depth:"), 0, 1, 1, 1)
-        grid.attach(self.depth_label, 1, 1, 1, 1)
-        grid.attach(self._create_info_label("Type:"), 0, 2, 1, 1)
-        grid.attach(self.type_label, 1, 2, 1, 1)
-        vbox.pack_start(grid, False, False, 0)
-        vbox.pack_start(Gtk.Box(), True, True, 0)
-    
-        return vbox
-
     def _update_icon_preview(self, icon_text):
         """Update icon preview image"""
         if not icon_text:
@@ -363,33 +215,6 @@ class PropertyPanel:
         else:
             self.icon_preview.clear()
     
-    def _on_title_changed(self, entry):
-        """Handle title change"""
-        if not self._is_loading and self.current_item_id and self.on_property_changed:
-            new_title = entry.get_text()
-            self.on_property_changed(self.current_item_id, 'title', new_title)
-    
-    def _on_command_changed(self, entry):
-        """Handle command change"""
-        if not self._is_loading and self.current_item_id and self.on_property_changed:
-            new_command = entry.get_text()
-            self.on_property_changed(self.current_item_id, 'command', new_command)
-            
-            # Update type label
-            if new_command.startswith('@'):
-                self.type_label.set_text("Script")
-            elif new_command:
-                self.type_label.set_text("Command")
-            else:
-                self.type_label.set_text("Folder")
-    
-    def _on_icon_changed(self, entry):
-        """Handle icon change"""
-        if not self._is_loading and self.current_item_id and self.on_property_changed:
-            new_icon = entry.get_text()
-            self.on_property_changed(self.current_item_id, 'icon', new_icon)
-            self._update_icon_preview(new_icon)
-    
     def _on_window_remember_toggled(self, checkbox):
         """Handle window position remembering toggle"""
         enabled = checkbox.get_active()
@@ -404,7 +229,8 @@ class PropertyPanel:
         if not self._is_loading and self.current_item_id and self.on_property_changed:
             if not enabled:
                 # Clear window state when checkbox is unchecked
-                self.on_property_changed(self.current_item_id, 'window_state', None)
+                self.on_property_changed(self.current_item_id, 'window_state', None, 
+                                       instance_idx=self.instance_combo.get_active())
     
     def _on_window_changed(self, widget):
         """Handle window control changes"""
@@ -424,9 +250,103 @@ class PropertyPanel:
                 'state': self.window_state_combo.get_active_text().lower()
             }
             
-            self.on_property_changed(self.current_item_id, 'window_state', window_state)
+            # Get instance number from combo
+            instance_idx = self.instance_combo.get_active()
+            if instance_idx >= 0:
+                self.on_property_changed(self.current_item_id, 'window_state', window_state, 
+                                       instance_idx=instance_idx)
         except ValueError:
             pass  # Ignore invalid numbers
+    
+    # === INSTANCE HANDLERS ===
+    
+    def _on_instance_changed(self, combo):
+        """Handle instance selection change"""
+        if self._is_loading:
+            return
+        
+        # For now, just clear fields when switching instances
+        self._clear_window_fields()
+        
+        idx = self.instance_combo.get_active()
+        if idx >= 0:
+            print(f"🔄 Switched to instance {idx + 1}")
+    
+    def _on_add_instance(self, button):
+        """Add new instance below current - UI only"""
+        current_count = self.instance_combo.get_model().iter_n_children(None)
+        
+        if current_count == 0:
+            # First time
+            self.instance_combo.remove_all()
+            self.instance_combo.append_text("1")
+            self.instance_combo.append_text("2")
+            self.instance_combo.set_active(1)
+            print("➕ Added instance 2")
+        else:
+            # Add next number
+            next_num = current_count + 1
+            self.instance_combo.append_text(f"{next_num}")
+            self.instance_combo.set_active(next_num - 1)
+            print(f"➕ Added instance {next_num}")
+        
+        self._clear_window_fields()
+        if self.current_item_id and self.on_property_changed:
+            self.on_property_changed(self.current_item_id, 'add_instance', None)
+    
+    def _on_remove_instance(self, button):
+        """Remove current instance and renumber"""
+        active_idx = self.instance_combo.get_active()
+        if active_idx < 0:
+            return
+        
+        # Get all current texts
+        model = self.instance_combo.get_model()
+        texts = []
+        it = model.get_iter_first()
+        while it:
+            texts.append(model.get_value(it, 0))
+            it = model.iter_next(it)
+        
+        print(f"📊 Before remove: {texts}, active_idx: {active_idx}")
+        
+        # Remove the selected one
+        if active_idx < len(texts):
+            removed_text = texts.pop(active_idx)
+            print(f"🗑️  Removing: {removed_text}")
+        
+        print(f"📊 After remove: {texts}")
+        
+        # Clear and re-add renumbered
+        self.instance_combo.remove_all()
+        for i in range(len(texts)):
+            self.instance_combo.append_text(f"{i + 1}")
+        
+        # Select appropriate one
+        if texts:
+            new_idx = min(active_idx, len(texts) - 1)
+            self.instance_combo.set_active(new_idx)
+            print(f"✅ Removed instance {active_idx + 1}, {len(texts)} remaining (renumbered 1-{len(texts)})")
+        else:
+            # All gone, add "1" back
+            self.instance_combo.append_text("1")
+            self.instance_combo.set_active(0)
+            print("🔄 Reset to instance 1")
+        
+        self._clear_window_fields()
+        if self.current_item_id and self.on_property_changed:
+            self.on_property_changed(self.current_item_id, 'remove_instance', active_idx)
+    
+    def _clear_window_fields(self):
+        """Clear window position fields"""
+        self.window_x_entry.set_text("")
+        self.window_y_entry.set_text("")
+        self.window_width_entry.set_text("")
+        self.window_height_entry.set_text("")
+        self.window_state_combo.set_active(0)
+        self.remember_window_cb.set_active(False)
+    
+    # === DIALOG METHODS ===
     
     def _on_script_dialog(self, button):
         """Open script selection AND editor"""
@@ -544,10 +464,240 @@ class PropertyPanel:
         
         dialog.destroy()
     
-    def _on_tile_clicked(self, button):
-        """Tile window alongside the last positioned window"""
-        if not self.current_item_id or not self.on_property_changed:
+    def _on_positioning_tool(self, button):
+        """Open positioning tool window"""
+        print("🪟 Positioning Tool clicked - would open positioning window")
+        # TODO: Implement positioning tool window
+    
+    # === UI CREATION ===
+    
+    def create_panel(self):
+        """Create the property panel frame - clean and compact"""
+        frame = Gtk.Frame(label="⚙️ Properties")
+        frame.set_shadow_type(Gtk.ShadowType.IN)
+        frame.set_size_request(350, -1)
+        
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        vbox.set_margin_top(8)
+        vbox.set_margin_bottom(8)
+        vbox.set_margin_start(8)
+        vbox.set_margin_end(8)
+        frame.add(vbox)
+        
+        # Title
+        vbox.pack_start(self._create_label("Title"), False, False, 0)
+        vbox.pack_start(self.title_entry, False, False, 0)
+        
+        # Command
+        vbox.pack_start(self._create_label("Command"), False, False, 5)
+        vbox.pack_start(self.command_container, False, False, 0)
+        
+        # Icon
+        vbox.pack_start(self._create_label("Icon"), False, False, 5)
+        vbox.pack_start(self.icon_container, False, False, 0)
+        
+        # Window positioning with inline checkbox
+        vbox.pack_start(self.window_header_container, False, False, 10)
+        vbox.pack_start(self.window_container, False, False, 0)
+        
+        # Action buttons: Instances + Tile on same line
+        action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        
+        # Instance controls
+        instance_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        instance_box.pack_start(self.instance_combo, False, False, 0)
+        instance_box.pack_start(self.instance_plus_btn, False, False, 0)
+        instance_box.pack_start(self.instance_minus_btn, False, False, 0)
+        
+        # Positioning Tool button
+        tile_btn = Gtk.Button.new_with_label("Positioning Tool")
+        tile_btn.set_tooltip_text("Open window positioning tool")
+        tile_btn.connect("clicked", self._on_positioning_tool)
+        
+        action_box.pack_start(instance_box, False, False, 0)
+        action_box.pack_start(tile_btn, True, True, 0)
+        
+        vbox.pack_start(self._create_label("Actions"), False, False, 10)
+        vbox.pack_start(action_box, False, False, 0)
+        
+        # Expand
+        vbox.pack_start(Gtk.Label(), True, True, 0)
+        
+        return frame
+    
+    def _create_label(self, text):
+        """Create a section label"""
+        label = Gtk.Label(label=f"<b>{text}</b>")
+        label.set_use_markup(True)
+        label.set_xalign(0)
+        return label
+    
+    def load_item(self, item):
+        """Load item with its current instance data"""
+        self._is_loading = True
+        self.current_item_id = item['id'] if isinstance(item, dict) else item.id
+        self.current_item = item  # Store the item object
+        
+        # Load basic item properties (title is same for all instances)
+        title = item['title'] if isinstance(item, dict) else item.title
+        self.title_entry.set_text(title)
+        
+        # Get instances from item
+        instances = []
+        if isinstance(item, dict) and 'instances' in item:
+            instances = item['instances']
+        elif hasattr(item, 'instances'):
+            instances = item.instances
+        
+        # Load FIRST instance's data by default
+        if instances:
+            instance = instances[0]
+            self.command_entry.set_text(instance.get('command', ''))
+            self.icon_entry.set_text(instance.get('icon', ''))
+            
+            # Load window state if exists
+            if instance.get('window_state'):
+                ws = instance['window_state']
+                self.window_x_entry.set_text(str(ws.get('x', '')))
+                self.window_y_entry.set_text(str(ws.get('y', '')))
+                self.window_width_entry.set_text(str(ws.get('width', '')))
+                self.window_height_entry.set_text(str(ws.get('height', '')))
+                
+                state_val = ws.get('state', 'normal').lower()
+                if state_val == 'maximized':
+                    self.window_state_combo.set_active(1)
+                elif state_val == 'minimized':
+                    self.window_state_combo.set_active(2)
+                elif state_val == 'fullscreen':
+                    self.window_state_combo.set_active(3)
+                else:
+                    self.window_state_combo.set_active(0)
+                
+                self.remember_window_cb.set_active(True)
+            else:
+                self._clear_window_fields()
+        else:
+            # No instances yet
+            self.command_entry.set_text('')
+            self.icon_entry.set_text('')
+            self._clear_window_fields()
+        
+        self._update_icon_preview(self.icon_entry.get_text())
+        
+        # Update instance combo based on number of instances
+        self.instance_combo.remove_all()
+        num_instances = len(instances) if instances else 1
+        for i in range(num_instances):
+            self.instance_combo.append_text(f"{i + 1}")
+        
+        self.instance_combo.set_active(0)
+        
+        self._is_loading = False
+        print(f"📋 PropertyPanel loaded item '{title}' with {num_instances} instances")
+
+    def _load_window_state_for_current_instance(self):
+        """Load window state for currently selected instance"""
+        if not hasattr(self, 'current_item') or not self.current_item:
+            self._clear_window_fields()
             return
         
-        print("⎔ Tile feature - would implement window tiling logic")
-        # This would need access to window manager to calculate positions
+        idx = self.instance_combo.get_active()
+        if idx < 0:
+            self._clear_window_fields()
+            return
+        
+        # Get instances from item
+        instances = []
+        if isinstance(self.current_item, dict) and 'instances' in self.current_item:
+            instances = self.current_item['instances']
+        elif hasattr(self.current_item, 'instances'):
+            instances = self.current_item.instances
+        
+        if idx < len(instances):
+            instance = instances[idx]
+            
+            if instance.get('window_state'):
+                ws = instance['window_state']
+                self.window_x_entry.set_text(str(ws.get('x', '')))
+                self.window_y_entry.set_text(str(ws.get('y', '')))
+                self.window_width_entry.set_text(str(ws.get('width', '')))
+                self.window_height_entry.set_text(str(ws.get('height', '')))
+                
+                state_val = ws.get('state', 'normal').lower()
+                if state_val == 'maximized':
+                    self.window_state_combo.set_active(1)
+                elif state_val == 'minimized':
+                    self.window_state_combo.set_active(2)
+                elif state_val == 'fullscreen':
+                    self.window_state_combo.set_active(3)
+                else:
+                    self.window_state_combo.set_active(0)
+                
+                self.remember_window_cb.set_active(True)
+                print(f"📤 Loaded window state for instance {idx + 1}")
+            else:
+                self._clear_window_fields()
+                print(f"📭 No window state saved for instance {idx + 1}")
+        else:
+            self._clear_window_fields()
+
+    def _on_instance_changed(self, combo):
+        """Handle instance selection change - load that instance's window state"""
+        if self._is_loading:
+            return
+        
+        idx = self.instance_combo.get_active()
+        if idx >= 0 and hasattr(self, 'current_item'):
+            print(f"🔄 Switching to instance {idx + 1}")
+            self._load_window_state_for_current_instance()
+    
+    def clear(self):
+        """Clear the panel"""
+        self._is_loading = True
+        self.current_item_id = None
+        
+        self.title_entry.set_text("")
+        self.command_entry.set_text("")
+        self.icon_entry.set_text("")
+        self.icon_preview.clear()
+        
+        self.instance_combo.remove_all()
+        self._clear_window_fields()
+        
+        self._is_loading = False
+    
+    def create_panel_contents(self):
+        """Create just the contents (for external framing) - simplified"""
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        vbox.set_margin_top(8)
+        vbox.set_margin_bottom(8)
+        vbox.set_margin_start(8)
+        vbox.set_margin_end(8)
+        
+        vbox.pack_start(self._create_label("Title"), False, False, 0)
+        vbox.pack_start(self.title_entry, False, False, 0)
+        vbox.pack_start(self._create_label("Command"), False, False, 5)
+        vbox.pack_start(self.command_container, False, False, 0)
+        vbox.pack_start(self._create_label("Icon"), False, False, 5)
+        vbox.pack_start(self.icon_container, False, False, 0)
+        vbox.pack_start(self.window_header_container, False, False, 10)
+        vbox.pack_start(self.window_container, False, False, 0)
+        
+        # Action buttons row
+        action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        instance_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        instance_box.pack_start(self.instance_combo, False, False, 0)
+        instance_box.pack_start(self.instance_plus_btn, False, False, 0)
+        instance_box.pack_start(self.instance_minus_btn, False, False, 0)
+        
+        tile_btn = Gtk.Button.new_with_label("Positioning Tool")
+        tile_btn.connect("clicked", self._on_positioning_tool)
+        
+        action_box.pack_start(instance_box, False, False, 0)
+        action_box.pack_start(tile_btn, True, True, 0)
+        
+        vbox.pack_start(self._create_label("Actions"), False, False, 10)
+        vbox.pack_start(action_box, False, False, 0)
+        vbox.pack_start(Gtk.Box(), True, True, 0)
+    
+        return vbox
