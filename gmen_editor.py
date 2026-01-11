@@ -20,7 +20,13 @@ def main():
     print("⚙️  Configurable for X11 (Ctrl/Alt/Shift+click)")
     
     config_dir = Path.home() / ".config" / "gmen"
-    db = Database(config_dir)
+    config_dir.mkdir(parents=True, exist_ok=True)  # CREATE DIRECTORY FIRST
+    
+    # Pass the FULL FILE PATH to Database
+    db_path = str(config_dir / "gmen.db")  # Convert Path to string
+    db = Database(db_path)  # Pass the file path, not directory
+    
+    print(f"✅ Database initialized at {db.db_path}")
     
     # Ensure menus directory exists
     menus_dir = config_dir / "menus"
