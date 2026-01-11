@@ -287,7 +287,12 @@ class SimpleListManager:
                 self._refresh_listbox()
                 print(f"↩️ Outdented item: {item['title']} (depth: {item['depth']})")
                 return
-    
+
+    def unselect_all(self):
+        """Clear all selection states"""
+        self.selected_id = None
+        # GTK listbox will handle visual unselection    
+
     def save(self):
         """Save items and their instances to database"""
         print(f"💾 Saving {len(self.items)} items with instances to menu {self.menu_id}...")

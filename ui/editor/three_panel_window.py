@@ -431,40 +431,6 @@ class ThreePanelWindow:
             
             self.set_unsaved_changes(True)
     
-    def _on_frame_clicked(self, event_box, event, panel_key):
-        """Handle frame click to activate panel - CLEAR OTHER PANELS"""
-        print(f"🖱️ Frame clicked: {panel_key}")
-        
-        # Update active panel
-        old_active = self.active_panel
-        self.active_panel = panel_key
-        
-        # Update visual highlighting
-        if old_active != panel_key:
-            self._highlight_active_panel()
-            # Update menu name when panel changes
-            self._update_menu_name()
-        
-        # CLEAR SELECTION IN OTHER PANELS
-        for other_key, other_panel in self.panels.items():
-            if other_key != panel_key:
-                other_panel.selected_id = None
-                other_panel._refresh_listbox()
-        
-        # Select first item in active panel if it has items
-        panel = self.panels[panel_key]
-        if panel.items:
-            # Only select first item if nothing is selected
-            if not panel.selected_id:
-                self._select_first_item_safe(panel_key)
-        else:
-            # No items - add one automatically AND SELECT IT
-            print(f"📝 No items in {panel_key} menu, adding one...")
-            new_item = panel.add_item()
-            self._delayed_load_new_item(panel_key, new_item['id'])
-        
-        return True
-    
     def _select_first_item_safe(self, panel_key):
         """Select first item in a panel without triggering loops"""
         panel = self.panels[panel_key]
@@ -474,8 +440,6 @@ class ThreePanelWindow:
             # Load into property panel
             GLib.timeout_add(50, self._delayed_load_item, panel_key)
     
-# In three_panel_window.py, update these key methods:
-
     def _delayed_load_item(self, panel_key):
         """Load item into property panel after UI is ready"""
         panel = self.panels[panel_key]
@@ -558,31 +522,108 @@ class ThreePanelWindow:
                 break
         return False
 
+    def _on_frame_clicked(self, event_box, event, panel_key):
+        """Handle frame click to activate panel - FIXED VERSION"""
+        print(f"🖱️ Frame clicked: {panel_key}")
+
+        # Update active panel
+        old_active = self.active_panel
+        self.active_panel = panel_key
+
+        # Update visual highlighting IMMEDIATELY
+        self._highlight_active_panel()
+
+        # Update menu name when panel changes
+        self._update_menu_name()
+
+        # CRITICAL FIX: Clear ALL selections in ALL panels first
+        for other_key, other_panel in self.panels.items():
+            # Clear the selected_id in the panel
+            other_panel.selected_id = None
+
+            # Clear the visual selection in the listbox
+            other_panel.listbox.unselect_all()
+
+            # Refresh the display
+            other_panel._refresh_listbox()
+            print(f"🗑️ Cleared selection in {other_key} panel")
+
+        # Now handle the clicked panel
+        panel = self.panels[panel_key]
+
+        # If panel has items, select first one
+        if panel.items:
+            # Block selection updates to prevent loops
+            self._updating_selection = True
+
+            # Select first item programmatically
+            if panel.listbox.get_selected_row() is None:
+                first_row = panel.listbox.get_row_at_index(0)
+                if first_row:
+                    panel.listbox.select_row(first_row)
+                    panel.selected_id = first_row.item_id
+
+                    # Load into property panel
+                    GLib.timeout_add(50, self._delayed_load_item, panel_key)
+
+            self._updating_selection = False
+        else:
+            # No items - add one automatically AND SELECT IT
+            print(f"📝 No items in {panel_key} menu, adding one...")
+            new_item = panel.add_item()
+            self._delayed_load_new_item(panel_key, new_item['id'])
+
+        return True
+
+
+    def _highlight_active_panel(self):
+        """Toggle active/inactive classes on panel frames - FIXED VERSION"""
+        for panel_key, frame in self.panel_frames.items():
+            ctx = frame.get_style_context()
+            if panel_key == self.active_panel:
+                ctx.remove_class("inactive-panel")
+                ctx.add_class("active-panel")
+                print(f"🎯 Panel {panel_key} is now ACTIVE (green border)")
+            else:
+                ctx.remove_class("active-panel")
+                ctx.add_class("inactive-panel")
+                print(f"🔘 Panel {panel_key} is now INACTIVE")
+
+        # Force a redraw to ensure CSS changes are applied
+        self.window.queue_draw()
+
+
+# Also need to fix the selection handler to clear other panels
     def _on_panel_selected(self, panel_key, row):
-        """Handle when a panel gets selection from listbox"""
+        """Handle when a panel gets selection from listbox - FIXED VERSION"""
         if self._updating_selection:
             return
-        
+
         # Update active panel if different
         if self.active_panel != panel_key:
             old_active = self.active_panel
             self.active_panel = panel_key
-            if old_active != panel_key:
-                self._highlight_active_panel()
-                self._update_menu_name()
-            
-            # CLEAR SELECTION IN OTHER PANELS
+
+            # Clear ALL other panel selections
             for other_key, other_panel in self.panels.items():
                 if other_key != panel_key:
                     other_panel.selected_id = None
+                    other_panel.listbox.unselect_all()
                     other_panel._refresh_listbox()
-        
+
+            # Update visual highlighting
+            self._highlight_active_panel()
+            self._update_menu_name()
+
         # Load selected item into property panel
         if row and hasattr(row, 'item_id'):
             panel = self.panels[panel_key]
-            # Set the flag temporarily to prevent loops
             self._updating_selection = True
             panel.selected_id = row.item_id
+
+            # Ensure only this row is selected visually
+            panel.listbox.select_row(row)
+
             item = panel.get_selected_item()
             if item:
                 # Create a SimpleMenuItem wrapper with instances
@@ -597,13 +638,13 @@ class ThreePanelWindow:
                         self.window_state = None
                         self.instances = instances or []
                         self._is_initial_load = False
-                    
+
                     def is_script(self):
                         return self.command.startswith('@') if self.command else False
-                
+
                 first_command = item['instances'][0]['command'] if item['instances'] else ''
                 first_icon = item['instances'][0]['icon'] if item['instances'] else ''
-                
+
                 menu_item = SimpleMenuItem(
                     id=item['id'],
                     title=item['title'],
@@ -612,10 +653,15 @@ class ThreePanelWindow:
                     db_id=item.get('db_id'),
                     instances=item['instances']
                 )
-                
+
                 print(f"📋 Loading selected item into property panel: {item['title'][:20]}...")
                 self.property_panel.load_item(menu_item)
+
             self._updating_selection = False
+        elif not row:  # Row deselected
+            panel = self.panels[panel_key]
+            panel.selected_id = None
+        self.property_panel.clear()
 
     def _on_property_changed(self, item_id, field, value, instance_idx=0):
         """Handle property changes - now per instance!"""
@@ -1249,17 +1295,6 @@ class ThreePanelWindow:
             )
         except Exception as e:
             print(f"⚠️ CSS error: {e}")
-
-    def _highlight_active_panel(self):
-        """Toggle active/inactive classes on panel frames"""
-        for panel_key, frame in self.panel_frames.items():
-            ctx = frame.get_style_context()
-            if panel_key == self.active_panel:
-                ctx.remove_class("inactive-panel")
-                ctx.add_class("active-panel")
-            else:
-                ctx.remove_class("active-panel")
-                ctx.add_class("inactive-panel")
 
     def show_message(self, message: str, duration: int = 3):
         """Show a message in the status area"""
